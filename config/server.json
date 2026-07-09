@@ -1,0 +1,21 @@
+{
+    "listen_address": "127.0.0.1",
+    "listen_port": 8888,
+    "max_connections": 1024,
+    "grid_cell_size": 16,
+    "aoi_radius": 2,
+    "scene_width": 6400,
+    "scene_height": 6400,
+    "tick_move": 30,
+    "tick_skill": 60,
+    "tick_aoi": 10,
+    "tick_net_sync": 30,
+    "scene_boundary_margin": 2,
+    "scene_hysteresis": 3,
+    "heartbeat_interval_ms": 1000,
+    "conn_timeout_ms": 5000,
+    "tw_tick_interval_ms": 10,
+    "tw_wheel_size": 256,
+    "bt_num_buckets": 13,
+    "bt_task_pool_size": 131072
+}
