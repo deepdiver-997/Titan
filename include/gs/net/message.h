@@ -17,7 +17,8 @@ enum class MsgType : uint8_t {
     Move = 0x02,
     Chat = 0x03,
     AoiEvent = 0x04,
-    Disconnect = 0x05,
+    Fire = 0x06,
+    Redirect = 0xF0,  // server → client: "reconnect to <ip:port>"
 };
 
 // ---- Internal Actor messages (not network protocol!) ---------------------
@@ -25,6 +26,19 @@ enum class MsgType : uint8_t {
 struct MoveMessage : public Message {
     EntityId player_id;
     Vec2 new_pos;
+};
+
+// Concrete Message subclass: player wants to fire.
+struct FireMessage : public Message {
+    EntityId player_id;
+    Vec2 direction;  // normalized
+};
+
+// Generic RPC command — parsed from client, dispatched by Scene to entity.
+struct ExecCmdMessage : public Message {
+    EntityId entity_id;
+    int func_id;
+    std::vector<uint8_t> args;
 };
 
 // ---- Incoming network messages (client → server) -------------------------

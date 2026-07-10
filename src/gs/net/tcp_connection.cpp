@@ -52,13 +52,15 @@ void TcpConnection::read_body(uint32_t length) {
     auto self = shared_from_this();
     _body_buf.resize(length);
     boost::asio::async_read(_socket, boost::asio::buffer(_body_buf),
-        [this, self](boost::system::error_code ec, size_t /*len*/) {
+        [this, self, length](boost::system::error_code ec, size_t /*len*/) {
             if (ec) {
                 handle_error("read_body: " + ec.message());
                 return;
             }
-            // Append raw bytes to RecvBuffer. Parsing happens in the tick.
-            _recv_buf.append(_body_buf.data(), _body_buf.size());
+            // Append full frame: [4B header][body] so parse_input can
+            // decode length-prefixed messages from RecvBuffer.
+            _recv_buf.append(_header_buf.data(), 4);
+            _recv_buf.append(_body_buf.data(), length);
             read_header();
         });
 }
