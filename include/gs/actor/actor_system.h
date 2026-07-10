@@ -3,48 +3,91 @@
 #include "gs/actor/actor.h"
 #include "gs/common/types.h"
 
+#include <boost/asio.hpp>
+
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
 
+
 namespace gs {
 
-// Manages Actor lifecycle and provides message-passing.
+class PeerManager;
+
+// Manages Actor lifecycle with tick frequency groups.
 //
-// Tick flow (orchestrated by main loop / thread pool):
-//   1. swap_all()   — swap every Actor's next_mailbox → cur_msgs
-//   2. Parse TCP data → push_now() to target Actor's cur_msgs
-//   3. process_all() — each Actor serial-processes its cur_msgs
-//      (mid-tick send() goes to next_mailbox, visible next tick)
+// Multi-threaded execution: call set_thread_pool() to enable parallel actor
+// processing within a tick group. Each actor runs on the thread pool; the
+// group waits for all actors to finish before the next tick fires.
+//
+// Without a thread pool, process_group() runs actors serially on the caller.
 class ActorSystem {
 public:
+    using GroupId = int;
+    static constexpr GroupId INVALID_GROUP = -1;
+
     ActorSystem() = default;
     ~ActorSystem() = default;
 
-    ActorId spawn(std::unique_ptr<Actor> actor);
+    // ---- Distributed routing (optional) -----------------------------------
 
-    // Send to Actor's next_mailbox (mid-tick inter-actor communication).
-    void send(ActorId id, std::unique_ptr<Message> msg);
+    // Call after creating PeerManager. Wires up sync-on-connect so new peers
+    // automatically receive this node's full Actor list (under _mutex).
+    void set_peer_manager(PeerManager* pm);
 
-    // Push to Actor's cur_msgs (TCP-parsed, same-tick consumption).
+    // ---- Thread pool (optional) -------------------------------------------
+
+    void set_thread_pool(boost::asio::thread_pool* pool) { _pool = pool; }
+
+    // ---- Tick groups ------------------------------------------------------
+
+    GroupId create_tick_group(const std::string& name, int frequency_hz);
+    ActorId spawn(std::unique_ptr<Actor> actor, GroupId group);
+
+    // Process one tick group. If a thread pool is set, actors run in parallel
+    // and the call blocks until all complete.
+    void process_group(GroupId group);
+
+    // ---- Individual actor operations --------------------------------------
+
+    void send(ActorId target, std::unique_ptr<Message> msg);
     void push_now(ActorId id, std::unique_ptr<Message> msg);
-
-    // Swap all Actors' mailboxes (next → cur).
     void swap_all();
-
-    // Process all cur_msgs for all Actors.
     void process_all();
 
-    // Get snapshot of all Actor IDs (for iteration).
-    std::vector<ActorId> actor_ids() const;
+    // ---- Debug ------------------------------------------------------------
 
+    void debug_list() const;
     size_t actor_count() const;
 
+    struct GroupSync {
+        int version = 0;
+        int pending = 0;
+        std::mutex mutex;
+        std::condition_variable cv;
+    };
+
+    struct GroupInfo {
+        GroupId id;
+        std::string name;
+        int frequency_hz;
+        std::vector<ActorId> actor_ids;
+        GroupSync sync;  // field, not pointer — constructed in-place
+    };
+    const std::vector<std::unique_ptr<GroupInfo>>& groups() const { return _groups; }
+
 private:
+    void route_pending(ActorId from, std::vector<PendingMsg> pending);
+
     mutable std::mutex _mutex;
     std::unordered_map<ActorId, std::unique_ptr<Actor>> _actors;
-    ActorId _next_id = 1;
+    std::vector<std::unique_ptr<GroupInfo>> _groups;
+    GroupId _next_group_id = 0;
+    ActorId _next_actor_id = 1;
+    boost::asio::thread_pool* _pool = nullptr;
+    PeerManager* _peer_mgr = nullptr;
 };
 
 }  // namespace gs

@@ -2,10 +2,16 @@
 
 namespace gs {
 
-Actor::Actor(ActorId id) : _id(id) {}
+Actor::Actor(ActorId id, std::string name) : _id(id), _name(std::move(name)) {}
 
-void Actor::send(std::unique_ptr<Message> msg) {
+void Actor::send(ActorId target, std::unique_ptr<Message> msg) {
+    // Same as before — direct to _next_mailbox via ActorSystem.
+    // This is called by ActorSystem::send() which has the global lock.
     _next_mailbox.push(std::move(msg));
+}
+
+void Actor::send_deferred(ActorId target, std::unique_ptr<Message> msg) {
+    _outbox.push_back({target, std::move(msg)});
 }
 
 void Actor::push_now(std::unique_ptr<Message> msg) {
@@ -13,7 +19,6 @@ void Actor::push_now(std::unique_ptr<Message> msg) {
 }
 
 void Actor::swap_mailboxes() {
-    // Move next_mailbox contents into cur_msgs.
     auto pending = _next_mailbox.swap_all();
     for (auto& msg : pending) {
         _cur_msgs.push_back(std::move(msg));
@@ -28,12 +33,10 @@ void Actor::process_all() {
     }
 }
 
-bool Actor::process_one() {
-    if (_cur_msgs.empty()) return false;
-    auto msg = std::move(_cur_msgs.front());
-    _cur_msgs.pop_front();
-    if (msg) on_message(*msg);
-    return true;
+std::vector<PendingMsg> Actor::drain_outbox() {
+    std::vector<PendingMsg> result;
+    result.swap(_outbox);
+    return result;
 }
 
 }  // namespace gs

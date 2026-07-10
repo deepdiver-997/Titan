@@ -5,63 +5,66 @@
 
 #include <deque>
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace gs {
 
-// Base class for all Actors.
-//
-// Double-buffered mailbox design:
-//   _cur_msgs    — messages being processed in the current tick
-//   _next_mailbox — thread-safe inbox for messages arriving from other
-//                   Actors mid-tick; will be processed next tick
-//
-// Tick flow:
-//   tick start:
-//     1. swap_mailboxes()  → _next_mailbox contents move to _cur_msgs
-//     2. push_now()        → TCP-parsed events added to _cur_msgs
-//     3. process_all()     → iterate _cur_msgs, on_message() for each
-//        (during on_message, send() pushes to _next_mailbox)
-//
-// This ensures: no actor sees mid-tick messages from other actors until
-// the next tick — the "world is frozen" semantics described in the
-// game-server architecture discussion.
+// Inter-Actor message buffered in outbox. After process_all() finishes,
+// ActorSystem automatically routes each pending message to the target
+// Actor's _next_mailbox.
+struct PendingMsg {
+    ActorId target_actor;
+    std::unique_ptr<Message> msg;
+};
+
 class Actor {
 public:
-    explicit Actor(ActorId id);
+    explicit Actor(ActorId id, std::string name = "");
     virtual ~Actor() = default;
 
     Actor(const Actor&) = delete;
     Actor& operator=(const Actor&) = delete;
 
     ActorId id() const { return _id; }
+    const std::string& name() const { return _name; }
+    void set_name(const std::string& n) { _name = n; }
     bool is_active() const { return _active; }
     void set_active(bool a) { _active = a; }
 
-    // ---- Message passing -------------------------------------------------
+    // Draining: stop accepting new work, finish pending, then shutdown.
+    bool is_draining() const { return _draining; }
+    void set_draining(bool d) { _draining = d; }
 
-    // Send a message to be processed NEXT tick (mid-tick inter-actor comm).
-    void send(std::unique_ptr<Message> msg);
+    // Immediate send to another Actor's _next_mailbox (mid-tick inter-Actor).
+    void send(ActorId target, std::unique_ptr<Message> msg);
 
-    // Push a message to be processed THIS tick (used during TCP parsing).
+    // Deferred send — queued in outbox, auto-routed by ActorSystem after
+    // process_all() completes. Use this for messages generated during
+    // on_message() that should reach the target in the next tick.
+    void send_deferred(ActorId target, std::unique_ptr<Message> msg);
+
+    // For TCP-parsed input (same-tick consumption).
     void push_now(std::unique_ptr<Message> msg);
 
-    // Swap next → cur. Called at tick start.
+    // Mailbox swap + process. Called by ActorSystem.
     void swap_mailboxes();
-
-    // Process all messages in cur_msgs.
     void process_all();
 
-    // Process one message from cur_msgs.
-    bool process_one();
+    // Drain outbox — called by ActorSystem after process_all().
+    std::vector<PendingMsg> drain_outbox();
 
 protected:
     virtual void on_message(Message& msg) = 0;
 
 private:
     ActorId _id;
-    Mailbox _next_mailbox;                          // thread-safe, for next tick
-    std::deque<std::unique_ptr<Message>> _cur_msgs; // tick-local, consumed now
+    std::string _name;
+    Mailbox _next_mailbox;
+    std::deque<std::unique_ptr<Message>> _cur_msgs;
+    std::vector<PendingMsg> _outbox;
     bool _active = true;
+    bool _draining = false;
 };
 
 }  // namespace gs
