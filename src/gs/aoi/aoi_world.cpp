@@ -30,19 +30,42 @@ void AoiWorld::add_entity(const AoiEntity& entity) {
         _grids[cell_index(entity.grid)].add(id);
     }
 
-    // Compute initial visible set and notify callbacks.
+    // Compute initial visible set for the new entity.
     std::unordered_set<EntityId> new_visible;
     collect_visible(entity.grid, entity.view_radius, new_visible);
 
+    // Notify the new entity about what it sees.
     AoiDiff diff;
     for (auto vid : new_visible) {
         if (vid != id) diff.entered.push_back(vid);
     }
-
     _entities[id].visible_set = std::move(new_visible);
-
     if (_callback && !diff.entered.empty()) {
         _callback(id, diff);
+    }
+
+    // Notify existing entities that the new entity entered THEIR view.
+    for (int dy = -entity.view_radius; dy <= entity.view_radius; ++dy) {
+        for (int dx = -entity.view_radius; dx <= entity.view_radius; ++dx) {
+            GridPos gp{entity.grid.x + dx, entity.grid.y + dy};
+            if (!valid_grid(gp)) continue;
+            for (const auto& [eid, _] : _grids[cell_index(gp)].entities()) {
+                if (eid == id) continue;
+                auto& other = _entities[eid];
+                // Check if the new entity is within other's view.
+                int gdx = entity.grid.x - other.grid.x;
+                int gdy = entity.grid.y - other.grid.y;
+                if (std::abs(gdx) <= other.view_radius &&
+                    std::abs(gdy) <= other.view_radius) {
+                    other.visible_set.insert(id);
+                    if (_callback) {
+                        AoiDiff other_diff;
+                        other_diff.entered.push_back(id);
+                        _callback(eid, other_diff);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -119,13 +142,14 @@ AoiDiff AoiWorld::compute_diff(const std::unordered_set<EntityId>& old_set,
                                const std::unordered_set<EntityId>& new_set,
                                EntityId self_id) const {
     AoiDiff diff;
-    // Entered: in new_set but not in old_set (and not self).
     for (auto id : new_set) {
-        if (id != self_id && old_set.find(id) == old_set.end()) {
+        if (id == self_id) continue;
+        if (old_set.find(id) == old_set.end()) {
             diff.entered.push_back(id);
+        } else {
+            diff.moved.push_back(id);  // in both → moved
         }
     }
-    // Left: in old_set but not in new_set (and not self).
     for (auto id : old_set) {
         if (id != self_id && new_set.find(id) == new_set.end()) {
             diff.left.push_back(id);
