@@ -178,16 +178,27 @@ Key distinction:
 ### Event Loop
 
 ```
-io_context.run()  ← single thread, blocks here
+main thread: signal polling (sleep 200ms)
+io_thread:   io_context.run()
   │
-  ├── tcp::acceptor::async_accept → new connection → start async_read
+  ├── tcp::acceptor::async_accept → new connection → async_read loop
   ├── tcp::socket::async_read → append to RecvBuffer
-  ├── tcp::socket::async_write → send responses to clients
-  └── steady_timer(16ms) → game tick callback
+  ├── tcp::socket::async_write → send responses
+  └── steady_timer(N ms) per wheel → tick callbacks → process_group
 ```
 
-No separate I/O thread. No `while+sleep`. The entire server runs on a single
-`io_context` event loop — network I/O and game ticks are interleaved naturally.
+Same pattern as ProtoRelay: async start + signal polling main loop.
+
+### Project Layering
+
+```
+include/gs/           ← 框架层：Actor、ActorSystem、TitanServer、网络
+examples/common/      ← 业务基础设施：Scene、SceneManager (AOI + 实体管理)
+examples/tank_battle/ ← 示例项目：BattleScene、Tank、Bullet
+```
+
+Scene is NOT part of the core framework. It provides AOI + entity storage for
+spatial simulations. Subclasses add game-specific logic (tank movement, combat).
 
 ### Game Tick Phases
 
@@ -261,7 +272,146 @@ Payload starts with 1-byte message type:
 - `0x03` Chat
 - `0x04` AOI Event (type: uint8, entity_id: uint64, x: float32, y: float32)
 
-## 7. Comparison with Production Systems
+## 6. Debug & Tick Control Console
+
+### Design
+
+Modeled after the Simulation Battle System's `mode step` / `debug break` pattern.
+A background thread reads stdin commands while the game loop runs on io_context.
+
+### Commands
+
+```
+list              — print all actors and tick groups (like `ps ax`)
+pause             — suspend ALL tick wheels (world frozen)
+resume            — restart all wheels
+step N            — run N ticks on all wheels, then pause again
+pwheel <ms>       — pause only the wheel at interval_ms
+rwheel <ms>       — resume only the wheel at interval_ms
+stop              — graceful shutdown (also SIGINT)
+```
+
+### Selective Wheel Control
+
+Each wheel can be independently paused/resumed. This enables debugging scenarios like:
+- Pause all wheels, resume only the move wheel → step through movement logic
+- Pause the skill wheel while keeping AOI and net sync running
+- Freeze the world, inspect state, single-step one tick group at a time
+
+Implementation: each wheel's steady_timer callback checks a `_paused_wheels` set
+before calling `wheel->tick()`.
+
+### SIGINT Handling
+
+SIGINT calls `server.stop()` directly (global server pointer). This stops io_context,
+which unblocks `io_context.run()`. The debug console thread exits when stdin closes.
+
+## 7. Logging (Planned)
+
+Current: `std::cout` / `std::cerr` for everything. Debug output and normal logs are
+interleaved, making it hard to follow either.
+
+Plan: migrate to **spdlog** with dual sinks (same pattern as ProtoRelay):
+
+```
+spdlog  →  console_sink (debug level, colored)   → terminal 1: interactive debug
+        →  file_sink (info level, rotating)       → tail -f titan.log
+```
+
+Usage from code:
+```cpp
+SPDLOG_DEBUG("AOI: player {} entered grid ({},{})", pid, gx, gy);
+SPDLOG_INFO("tick {}: {} connections, {} timers", tick, conns, pending);
+```
+
+Workflow:
+- **Terminal 1**: `./titan_server` — sees only debug output + interactive `list/pause/step` commands
+- **Terminal 2**: `tail -f titan.log` — scrolls through normal execution logs, no debug noise
+
+## 8. Distributed Actor Routing
+
+### PeerManager — Gossip Discovery + Position Registry
+
+Each node runs one PeerManager. Nodes discover each other via gossip:
+
+```
+PeerManager:
+  _peers:   map<"ip:port", IPeer>     // active TCP connections
+  _routes:  map<ActorId, "ip:port">   // which node owns which Actor
+  _known_nodes: set<"ip:port">        // all discovered nodes
+
+Protocol (length-prefixed, same pattern as game messages):
+  0xE0 = REGISTER_ACTOR(aid)      // "Actor X is on my node"
+  0xE1 = UNREGISTER_ACTOR(aid)    // "Actor X is gone"
+  0xE2 = NEW_NODE("ip:port")      // "Check out this new node"
+  0xE3 = ACTOR_MSG(aid, payload)  // forwarded inter-Actor message
+```
+
+### Connection Lifecycle
+
+```
+Node A starts:  listen on :9000
+Node B starts:  listen on :9001, connect_to_peer("A", 9000)
+  → B → A: TCP connect
+  → A accepts, adds B to _peers, gossips B's address to all others
+  → B's on_new_peer callback fires → syncs all local Actors to A
+  → A's on_new_peer callback fires → syncs all local Actors to B
+  → Both nodes now have each other's Actor lists
+```
+
+### ActorSystem::send() — Transparent Local/Remote
+
+```cpp
+void ActorSystem::send(ActorId target, Message msg) {
+    if (本地有) → 直接投递 _next_mailbox
+    else       → _peer_mgr->send_to(target, msg)  // TCP to remote node
+}
+```
+
+### Thread Safety
+
+- `_routes` updates are per-IP single writer (each peer's TCP callback runs on its own strand)
+- `_routes` reads from `send_to()` are lock-free (stale reads are benign)
+- `_peers` insert/delete under mutex
+
+## 9. Multi-Threaded Actor Execution
+
+When a thread pool is set via `ActorSystem::set_thread_pool()`, `process_group()` posts each Actor to the pool instead of running serially.
+
+```
+process_group(grp_move):
+  sync.version++          // new batch
+  sync.pending = N        // actors in group
+
+  for each actor:
+    post to thread_pool:
+      actor.process_all()
+      sync.pending--       // atomic
+      if pending == 0:     // last actor done
+        sync.version++     // advance batch
+        cv.notify_all()
+
+  cv.wait(version > my_batch)  // barrier — wait for all actors
+```
+
+Each group has its own `GroupSync` (version, pending count, mutex, cv). Different groups run independently — no cross-group blocking.
+
+## 10. Hot Reload via Instance Draining
+
+Titan supports zero-downtime rolling updates:
+
+```
+1. New instance starts on port 9001, joins cluster via PeerManager
+2. Old instance receives "drain" command:
+   → Actor::set_draining(true)      // stop accepting new work
+   → TcpServer::drain("ip", 9001)   // send REDIRECT to all clients
+   → Clients disconnect and reconnect to new instance
+3. Old instance exits when all clients have migrated
+```
+
+Wire format for REDIRECT (0xF0): `[ip_len 1B][ip str][port 2B]`
+
+## 11. Comparison with Production Systems
 
 | Aspect | Titan Demo | Production (e.g. skynet) |
 |--------|-----------|--------------------------|

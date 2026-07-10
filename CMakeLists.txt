@@ -41,11 +41,6 @@ set(TITAN_CORE_SOURCES
     src/gs/aoi/aoi_entity.cpp
     src/gs/aoi/aoi_grid.cpp
     src/gs/aoi/aoi_world.cpp
-    # Tick system
-    src/gs/tick/tick_manager.cpp
-    # Scene
-    src/gs/scene/scene.cpp
-    src/gs/scene/scene_manager.cpp
     # Entity
     src/gs/entity/entity.cpp
     src/gs/entity/player.cpp
@@ -55,10 +50,17 @@ set(TITAN_CORE_SOURCES
     src/gs/net/tcp_connection.cpp
     src/gs/net/connection_manager.cpp
     src/gs/net/message.cpp
+    src/gs/net/net_sync_actor.cpp
+    # Peer-to-peer
+    src/gs/net/tcp_peer.cpp
+    src/gs/actor/peer_manager.cpp
+    # Server
+    src/gs/server/titan_server.cpp
 )
 
 add_library(titan_core STATIC ${TITAN_CORE_SOURCES})
 target_include_directories(titan_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     SYSTEM ${Boost_INCLUDE_DIRS}
 )
@@ -71,13 +73,56 @@ target_link_libraries(titan_core PUBLIC
 add_executable(titan_server
     src/gs/main.cpp
 )
-target_link_libraries(titan_server PRIVATE titan_core)
+target_link_libraries(titan_server PRIVATE titan_core example_common)
 
-# ---- Client --------------------------------------------------------------
+# ---- Examples ------------------------------------------------------------
+add_subdirectory(examples/common)
+
+# ---- Example: tank battle server -----------------------------------------
+add_subdirectory(examples/tank_battle)
+
+# ---- Terminal clients (no graphics) -------------------------------------
 add_executable(titan_client
     client/terminal_client.cpp
 )
 target_include_directories(titan_client PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     SYSTEM ${Boost_INCLUDE_DIRS}
 )
+
+add_executable(terminal_tank
+    client/src/terminal_tank.cpp
+)
+target_include_directories(terminal_tank PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    SYSTEM ${Boost_INCLUDE_DIRS}
+)
+
+# ---- Tank battle client (raylib) -----------------------------------------
+option(BUILD_TANK_CLIENT "Build raylib tank battle client" ON)
+if(BUILD_TANK_CLIENT)
+    # Try brew-installed raylib first, fall back to FetchContent.
+    find_package(raylib QUIET)
+    if(NOT raylib_FOUND)
+        include(FetchContent)
+        FetchContent_Declare(raylib
+            GIT_REPOSITORY https://github.com/raysan5/raylib.git
+            GIT_TAG 5.5
+        )
+        FetchContent_MakeAvailable(raylib)
+    endif()
+
+    add_executable(titan_tank_client
+        client/src/main.cpp
+        client/src/game_client.cpp
+        client/src/renderer.cpp
+    )
+    target_include_directories(titan_tank_client PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        SYSTEM ${Boost_INCLUDE_DIRS}
+    )
+    target_link_libraries(titan_tank_client PRIVATE raylib)
+endif()
