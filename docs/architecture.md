@@ -46,7 +46,24 @@ Each map shard (Scene) is an Actor. This means:
 
 ## 2. AOI System
 
-### Nine-Grid Algorithm
+### IAoi Interface
+
+```cpp
+class IAoi {
+    virtual void add_entity(const AoiEntity&) = 0;
+    virtual void remove_entity(EntityId) = 0;
+    virtual bool move_entity(EntityId, const Vec2&) = 0;
+    virtual const AoiEntity* get_entity(EntityId) const = 0;
+    virtual void set_callback(AoiCallback) = 0;
+};
+```
+
+Default implementation: `NineGridAoi`. Other algorithms (CrossLinkAoi for
+large sparse worlds, TowerAoi for 2.5D) implement the same interface.
+Scene holds `unique_ptr<IAoi>` — inject a custom AOI via the constructor,
+defaults to `make_default_aoi()`.
+
+### Nine-Grid Algorithm (NineGridAoi)
 
 The world is divided into fixed-size cells (16m x 16m, matching Minecraft's
 chunk size). Each entity is registered in the cell containing its center.
@@ -245,13 +262,13 @@ When an entity approaches a scene boundary:
 
 ```
 Scene A                    boundary                    Scene B
-  │                          │                          │
+  │                         │                          │
   │     ┌──────────┐        │                          │
   │     │ mirror   │········│·····> (entity enters     │
   │     │ zone     │        │       Scene B's AOI)     │
   │     │ (2 cells)│        │                          │
   │     └──────────┘        │                          │
-  │                          │                          │
+  │                         │                          │
 ```
 
 1. Entity within 2 cells of boundary -> registered as mirror in adjacent Scene
@@ -411,7 +428,65 @@ Titan supports zero-downtime rolling updates:
 
 Wire format for REDIRECT (0xF0): `[ip_len 1B][ip str][port 2B]`
 
-## 11. Comparison with Production Systems
+## 11. Client-Side AOI
+
+Game clients maintain their own local entity table, updated by server-pushed
+AOI events. This is conceptually identical to a quantitative trading system
+maintaining a local order book from incremental exchange feeds:
+
+```
+Server pushes:  ENTER 42 150 200   →  client._entities[42] = {150, 200}
+                MOVE  42 152 200   →  client._entities[42].x = 152
+                LEAVE 42           →  client._entities.erase(42)
+```
+
+The client does NOT need an Actor abstraction — the game engine (Unity, raylib)
+already provides the framework for input/update/render loops. Actors are a
+server-side concurrency pattern.
+
+## 12. Protocol Pluggability
+
+The parsing layer is already pluggable via `TcpPeer::set_recv_callback()`.
+Current implementation: `main.cpp`'s `_handlers` registry dispatches by
+message type. Swapping the protocol means replacing the callback — TcpPeer
+doesn't change.
+
+```
+TcpPeer::_recv_cb(raw_bytes)
+  → parse_input() → _handlers[type]() → push_now() to Actor
+```
+
+### TcpConnection vs IPeer
+
+- `TcpConnection`: client-facing (one per player), owns RecvBuffer
+- `IPeer` / `TcpPeer`: node-facing (one per server), gossip + Actor forwarding
+
+They share the same length-prefix + async read pattern but serve different
+roles. Future: could unify under a single `IConnection` interface.
+
+### IServer Abstraction (Future)
+
+TcpServer could implement `IServer` for pluggable transports (TCP, QUIC,
+WebSocket). Currently TcpServer directly manages `weak_ptr<TcpConnection>`.
+Not urgent — single TCP transport covers the demo's needs.
+
+## 13. Production Engineering Gaps
+
+Intentionally deferred. The project demonstrates architecture understanding,
+not production readiness:
+
+| Gap | Status | Plan |
+|-----|--------|------|
+| **spdlog logging** | std::cout/cerr | Dual-sink: console(debug) + file(info), ProtoRelay pattern |
+| **Config from file** | ServerConfig hardcoded | JSON/YAML parsing (nlohmann/json) |
+| **Metrics/health** | None | HTTP GET /health + /metrics, ProtoRelay already has this |
+| **CI/CD** | None | GitHub Actions: cmake build + basic test |
+| **Actor supervision** | None | Dead-actor detection, crash-only restart |
+| **Performance profiling** | None | Benchmark tick latency, throughput under load |
+| **IServer abstraction** | TcpServer concrete | IServer interface for QUIC/WS swap |
+| **Unified IConnection** | TcpConnection + TcpPeer separate | Merge shared protocol logic |
+
+## 14. Comparison with Production Systems
 
 | Aspect | Titan Demo | Production (e.g. skynet) |
 |--------|-----------|--------------------------|
