@@ -1,7 +1,7 @@
 #pragma once
 
 #include "bullet.h"
-#include "examples/common/scene/scene.h"
+#include "gs/scene/scene.h"
 #include "tank.h"
 
 #include <memory>

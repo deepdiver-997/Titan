@@ -3,7 +3,7 @@
 #include "gs/actor/actor_system.h"
 #include "gs/common/config.h"
 #include "gs/common/types.h"
-#include "scene.h"
+#include "gs/scene/scene.h"
 
 #include <unordered_map>
 #include <vector>

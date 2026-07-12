@@ -5,7 +5,7 @@
 
 namespace gs {
 
-AoiWorld::AoiWorld(float world_width, float world_height, float cell_size,
+NineGridAoi::NineGridAoi(float world_width, float world_height, float cell_size,
                    int default_view_radius)
     : _grid_cols(static_cast<int>(std::ceil(world_width / cell_size)))
     , _grid_rows(static_cast<int>(std::ceil(world_height / cell_size)))
@@ -14,15 +14,15 @@ AoiWorld::AoiWorld(float world_width, float world_height, float cell_size,
     _grids.resize(_grid_cols * _grid_rows);
 }
 
-int AoiWorld::cell_index(const GridPos& gp) const {
+int NineGridAoi::cell_index(const GridPos& gp) const {
     return gp.y * _grid_cols + gp.x;
 }
 
-bool AoiWorld::valid_grid(const GridPos& gp) const {
+bool NineGridAoi::valid_grid(const GridPos& gp) const {
     return gp.x >= 0 && gp.x < _grid_cols && gp.y >= 0 && gp.y < _grid_rows;
 }
 
-void AoiWorld::add_entity(const AoiEntity& entity) {
+void NineGridAoi::add_entity(const AoiEntity& entity) {
     EntityId id = entity.id;
     _entities[id] = entity;
 
@@ -69,7 +69,7 @@ void AoiWorld::add_entity(const AoiEntity& entity) {
     }
 }
 
-void AoiWorld::remove_entity(EntityId id) {
+void NineGridAoi::remove_entity(EntityId id) {
     auto it = _entities.find(id);
     if (it == _entities.end()) return;
 
@@ -87,7 +87,7 @@ void AoiWorld::remove_entity(EntityId id) {
     _entities.erase(it);
 }
 
-bool AoiWorld::move_entity(EntityId id, const Vec2& new_pos) {
+bool NineGridAoi::move_entity(EntityId id, const Vec2& new_pos) {
     auto it = _entities.find(id);
     if (it == _entities.end()) return false;
 
@@ -124,7 +124,7 @@ bool AoiWorld::move_entity(EntityId id, const Vec2& new_pos) {
     return old_grid != new_grid;
 }
 
-void AoiWorld::collect_visible(const GridPos& center, int radius,
+void NineGridAoi::collect_visible(const GridPos& center, int radius,
                                std::unordered_set<EntityId>& out) const {
     for (int dy = -radius; dy <= radius; ++dy) {
         for (int dx = -radius; dx <= radius; ++dx) {
@@ -138,7 +138,7 @@ void AoiWorld::collect_visible(const GridPos& center, int radius,
     }
 }
 
-AoiDiff AoiWorld::compute_diff(const std::unordered_set<EntityId>& old_set,
+AoiDiff NineGridAoi::compute_diff(const std::unordered_set<EntityId>& old_set,
                                const std::unordered_set<EntityId>& new_set,
                                EntityId self_id) const {
     AoiDiff diff;
@@ -158,12 +158,12 @@ AoiDiff AoiWorld::compute_diff(const std::unordered_set<EntityId>& old_set,
     return diff;
 }
 
-const AoiEntity* AoiWorld::get_entity(EntityId id) const {
+const AoiEntity* NineGridAoi::get_entity(EntityId id) const {
     auto it = _entities.find(id);
     return it != _entities.end() ? &it->second : nullptr;
 }
 
-const std::unordered_map<EntityId, bool>* AoiWorld::entities_in_cell(
+const std::unordered_map<EntityId, bool>* NineGridAoi::entities_in_cell(
     const GridPos& gp) const {
     if (!valid_grid(gp)) return nullptr;
     return &_grids[cell_index(gp)].entities();

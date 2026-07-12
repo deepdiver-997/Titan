@@ -110,7 +110,7 @@ int main() {
 
         conn->set_close_callback([&, pid]() {
                 tcp_server.unregister_conn(pid);
-                battle_ptr->aoi_world().remove_entity(pid);
+                battle_ptr->aoi().remove_entity(pid);
             });
             tcp_server.register_conn(pid, conn);
         });

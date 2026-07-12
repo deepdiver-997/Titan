@@ -14,7 +14,7 @@ BattleScene::BattleScene(gs::ActorId id, gs::SceneId scene_id,
         auto aid = net_sync_target();
         if (aid == gs::INVALID_ACTOR_ID) return;
         for (auto eid : diff.entered) {
-            auto* ent = aoi_world().get_entity(eid);
+            auto* ent = aoi().get_entity(eid);
             float x = ent ? ent->position.x : 0;
             float y = ent ? ent->position.y : 0;
             auto msg = std::make_unique<gs::ClientBoundMsg>();
@@ -24,7 +24,7 @@ BattleScene::BattleScene(gs::ActorId id, gs::SceneId scene_id,
             send_deferred(aid, std::move(msg));
         }
         for (auto eid : diff.moved) {
-            auto* ent = aoi_world().get_entity(eid);
+            auto* ent = aoi().get_entity(eid);
             float x = ent ? ent->position.x : 0;
             float y = ent ? ent->position.y : 0;
             auto msg = std::make_unique<gs::ClientBoundMsg>();
@@ -61,7 +61,7 @@ void BattleScene::tick_bullets(int dt_ms) {
     for (auto it = _bullets.begin(); it != _bullets.end();) {
         auto& [bid, bullet] = *it;
         if (!bullet->is_alive()) {
-            aoi_world().remove_entity(bid);
+            aoi().remove_entity(bid);
             it = _bullets.erase(it);
             std::cout << "[battle] bullet " << bid << " expired" << std::endl;
             continue;

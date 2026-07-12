@@ -41,6 +41,9 @@ set(TITAN_CORE_SOURCES
     src/gs/aoi/aoi_entity.cpp
     src/gs/aoi/aoi_grid.cpp
     src/gs/aoi/aoi_world.cpp
+    # Scene (optional framework module)
+    src/gs/scene/scene.cpp
+    src/gs/scene/scene_manager.cpp
     # Entity
     src/gs/entity/entity.cpp
     src/gs/entity/player.cpp
@@ -73,10 +76,7 @@ target_link_libraries(titan_core PUBLIC
 add_executable(titan_server
     src/gs/main.cpp
 )
-target_link_libraries(titan_server PRIVATE titan_core example_common)
-
-# ---- Examples ------------------------------------------------------------
-add_subdirectory(examples/common)
+target_link_libraries(titan_server PRIVATE titan_core)
 
 # ---- Example: tank battle server -----------------------------------------
 add_subdirectory(examples/tank_battle)

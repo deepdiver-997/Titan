@@ -1,4 +1,4 @@
-#include "scene_manager.h"
+#include "gs/scene/scene_manager.h"
 
 namespace gs {
 
@@ -52,7 +52,7 @@ void SceneManager::move_entity(EntityId eid, const Vec2& new_pos) {
     SceneId target = scene_for_position(new_pos.x);
     if (target != sid && target != INVALID_SCENE_ID) {
         if (!get_scene(target)) create_scene(_default_group);
-        scene->aoi_world().remove_entity(eid);
+        scene->aoi().remove_entity(eid);
         pit->second = target;
         return;
     }
