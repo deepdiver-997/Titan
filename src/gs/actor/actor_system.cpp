@@ -3,12 +3,13 @@
 #include "gs/debug/snapshot.h"
 
 #include <iostream>
+#include <shared_mutex>
 
 namespace gs {
 
 ActorSystem::GroupId ActorSystem::create_tick_group(const std::string& name,
                                                     int frequency_hz) {
-    std::lock_guard<std::mutex> lk(_mutex);
+    std::unique_lock lk(_routing_mutex);
     GroupId id = _next_group_id++;
     auto gi = std::make_unique<GroupInfo>();
     gi->id = id;
@@ -21,7 +22,7 @@ ActorSystem::GroupId ActorSystem::create_tick_group(const std::string& name,
 ActorId ActorSystem::spawn(std::unique_ptr<Actor> actor, GroupId group) {
     ActorId aid = _next_actor_id++;
     {
-        std::lock_guard<std::mutex> lk(_mutex);
+        std::unique_lock lk(_routing_mutex);
         _actors[aid] = std::move(actor);
         if (group != INVALID_GROUP) {
             for (auto& gp : _groups) {
@@ -39,7 +40,7 @@ ActorId ActorSystem::spawn(std::unique_ptr<Actor> actor, GroupId group) {
 void ActorSystem::set_peer_manager(PeerManager* pm) {
     _peer_mgr = pm;
     pm->on_new_peer([this, pm](const std::string& addr) {
-        std::lock_guard<std::mutex> lk(_mutex);
+        std::shared_lock lk(_routing_mutex);
         for (const auto& [aid, actor] : _actors) {
             pm->send_register_to(addr, aid);
         }
@@ -53,7 +54,7 @@ void ActorSystem::process_group(GroupId group) {
 
     GroupInfo* g = nullptr;
     {
-        std::lock_guard<std::mutex> lk(_mutex);
+        std::shared_lock lk(_routing_mutex);
         for (auto& gp : _groups) {
             if (gp->id == group) { g = gp.get(); break; }
         }
@@ -61,7 +62,7 @@ void ActorSystem::process_group(GroupId group) {
     if (!g || g->actor_ids.empty()) return;
 
     if (!_pool) {
-        std::lock_guard<std::mutex> lk(_mutex);
+        std::shared_lock lk(_routing_mutex);
         for (auto aid : g->actor_ids) {
             auto it = _actors.find(aid);
             if (it == _actors.end() || !it->second->is_active()) continue;
@@ -83,7 +84,7 @@ void ActorSystem::process_group(GroupId group) {
     for (auto aid : g->actor_ids) {
         boost::asio::post(*_pool, [this, aid, g, batch]() {
             {
-                std::lock_guard<std::mutex> lk(_mutex);
+                std::shared_lock lk(_routing_mutex);
                 auto it = _actors.find(aid);
                 if (it != _actors.end() && it->second->is_active()) {
                     it->second->swap_mailboxes();
@@ -120,7 +121,7 @@ void ActorSystem::route_pending(ActorId /*from*/,
 
 void ActorSystem::send(ActorId target, std::unique_ptr<Message> msg) {
     {
-        std::lock_guard<std::mutex> lk(_mutex);
+        std::shared_lock lk(_routing_mutex);
         auto it = _actors.find(target);
         if (it != _actors.end()) {
             it->second->send(target, std::move(msg));
@@ -132,23 +133,15 @@ void ActorSystem::send(ActorId target, std::unique_ptr<Message> msg) {
     }
 }
 
-void ActorSystem::push_now(ActorId id, std::unique_ptr<Message> msg) {
-    std::lock_guard<std::mutex> lk(_mutex);
-    auto it = _actors.find(id);
-    if (it != _actors.end()) {
-        it->second->push_now(std::move(msg));
-    }
-}
-
 void ActorSystem::swap_all() {
-    std::lock_guard<std::mutex> lk(_mutex);
+    std::shared_lock lk(_routing_mutex);
     for (auto& [id, actor] : _actors) {
         actor->swap_mailboxes();
     }
 }
 
 void ActorSystem::process_all() {
-    std::lock_guard<std::mutex> lk(_mutex);
+    std::shared_lock lk(_routing_mutex);
     for (auto& [id, actor] : _actors) {
         if (actor->is_active()) {
             actor->process_all();
@@ -158,7 +151,7 @@ void ActorSystem::process_all() {
 }
 
 size_t ActorSystem::actor_count() const {
-    std::lock_guard<std::mutex> lk(_mutex);
+    std::shared_lock lk(_routing_mutex);
     return _actors.size();
 }
 
@@ -170,7 +163,7 @@ void ActorSystem::capture_all(
     // prevents new ones from starting during snapshot.
     std::unique_lock debug_lk(_debug_mutex);
 
-    std::lock_guard<std::mutex> lk(_mutex);
+    std::shared_lock lk(_routing_mutex);
     out.reserve(_actors.size());
 
     for (const auto& [aid, actor] : _actors) {

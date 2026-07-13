@@ -41,7 +41,7 @@ static void parse_input(
                     auto msg = std::make_unique<MoveMessage>();
                     msg->player_id = player_id;
                     msg->new_pos = pos;
-                    sys.push_now(static_cast<ActorId>(sid), std::move(msg));
+                    sys.send(static_cast<ActorId>(sid), std::move(msg));
                 }
             }
             off += len;

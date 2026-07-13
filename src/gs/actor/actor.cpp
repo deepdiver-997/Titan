@@ -5,17 +5,11 @@ namespace gs {
 Actor::Actor(ActorId id, std::string name) : _id(id), _name(std::move(name)) {}
 
 void Actor::send(ActorId target, std::unique_ptr<Message> msg) {
-    // Same as before — direct to _next_mailbox via ActorSystem.
-    // This is called by ActorSystem::send() which has the global lock.
     _next_mailbox.push(std::move(msg));
 }
 
 void Actor::send_deferred(ActorId target, std::unique_ptr<Message> msg) {
     _outbox.push_back({target, std::move(msg)});
-}
-
-void Actor::push_now(std::unique_ptr<Message> msg) {
-    _cur_msgs.push_back(std::move(msg));
 }
 
 void Actor::swap_mailboxes() {

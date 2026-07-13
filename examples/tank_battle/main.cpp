@@ -129,7 +129,7 @@ int main() {
         msg->entity_id = pid;
         msg->func_id = 0;
         msg->args.assign(b, b + len);
-        s.push_now(aid, std::move(msg));
+        s.send(aid, std::move(msg));
     };
     _handlers[0x06] = [](EntityId pid, const uint8_t* b, size_t len,
                          ActorSystem& s, ActorId aid) {
@@ -137,7 +137,7 @@ int main() {
         msg->entity_id = pid;
         msg->func_id = 1;
         msg->args.assign(b, b + len);
-        s.push_now(aid, std::move(msg));
+        s.send(aid, std::move(msg));
     };
 
     // Tick callbacks.

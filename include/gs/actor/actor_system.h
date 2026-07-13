@@ -29,11 +29,13 @@ struct ActorStateEntry;
 //
 // Without a thread pool, process_group() runs actors serially on the caller.
 //
-// Thread safety vs snapshot:
-//   process_group() acquires a shared_lock on _debug_mutex (read lock,
-//   concurrent with other process_group calls).
-//   capture_all() acquires a unique_lock (write lock, exclusive) — it waits
-//   for all in-flight process_group calls to finish before snapshotting.
+// Thread safety: _routing_mutex uses shared_mutex.
+//   send()           — shared_lock (concurrent reads).
+//   spawn/swap_all/process_all — unique_lock (exclusive writes).
+//
+// Debug snapshot isolation uses a separate _debug_mutex:
+//   process_group()  — shared_lock (concurrent with other process_group).
+//   capture_all()    — unique_lock (waits for all process_group).
 class ActorSystem {
 public:
     using GroupId = int;
@@ -64,7 +66,6 @@ public:
     // ---- Individual actor operations --------------------------------------
 
     void send(ActorId target, std::unique_ptr<Message> msg);
-    void push_now(ActorId id, std::unique_ptr<Message> msg);
     void swap_all();
     void process_all();
 
@@ -95,7 +96,7 @@ public:
 private:
     void route_pending(ActorId from, std::vector<PendingMsg> pending);
 
-    mutable std::mutex _mutex;
+    mutable std::shared_mutex _routing_mutex;
     std::unordered_map<ActorId, std::unique_ptr<Actor>> _actors;
     std::vector<std::unique_ptr<GroupInfo>> _groups;
     GroupId _next_group_id = 0;

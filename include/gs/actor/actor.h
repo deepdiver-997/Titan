@@ -45,12 +45,8 @@ public:
     void send(ActorId target, std::unique_ptr<Message> msg);
 
     // Deferred send — queued in outbox, auto-routed by ActorSystem after
-    // process_all() completes. Use this for messages generated during
-    // on_message() that should reach the target in the next tick.
+    // process_all() completes.
     void send_deferred(ActorId target, std::unique_ptr<Message> msg);
-
-    // For TCP-parsed input (same-tick consumption).
-    void push_now(std::unique_ptr<Message> msg);
 
     // Mailbox swap + process. Called by ActorSystem.
     void swap_mailboxes();

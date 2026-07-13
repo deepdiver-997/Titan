@@ -55,7 +55,7 @@ TEST_CASE("Deterministic Replay: actor processing + snapshot capture",
     auto msg = std::make_unique<ClientBoundMsg>();
     msg->target_player = 1;
     msg->data = "hello";
-    sys.push_now(aid, std::move(msg));
+    sys.send(aid, std::move(msg));
     sys.swap_all();
     sys.process_group(grp);
 
