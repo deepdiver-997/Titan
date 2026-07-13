@@ -61,7 +61,8 @@ public:
     // Schedule |fn(arg)| to run at |at| (absolute steady_clock time).
     // Returns a TaskId for cancellation, or INVALID_TASK_ID on error.
     TaskId schedule(TimerCallback fn, void* arg,
-                    std::chrono::steady_clock::time_point at);
+                    std::chrono::steady_clock::time_point at,
+                    uint32_t flags = TASK_FLAG_NONE);
 
     // Cancel a previously scheduled task.
     // Returns: 0=cancelled, 1=running, -1=invalid.

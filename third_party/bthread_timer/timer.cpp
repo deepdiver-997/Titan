@@ -8,6 +8,8 @@
 
 namespace bthread_timer {
 
+thread_local int64_t tls_compensation_us = 0;
+
 // ============================================================================
 // MurmurHash3 finalisation mix (fmix64) — same hash as brpc
 // ============================================================================
@@ -55,6 +57,7 @@ struct Timer::Task {
     TimerCallback fn = nullptr;
     void* arg = nullptr;
     TaskId task_id = INVALID_TASK_ID;
+    uint32_t flags = TASK_FLAG_NONE;
 
     // version states:
     //   initial_version:     pending
@@ -70,7 +73,13 @@ struct Timer::Task {
         uint32_t expected = id_version;
         if (version.compare_exchange_strong(
                 expected, id_version + 1, std::memory_order_relaxed)) {
-            fn(arg);
+            if (flags & TASK_FLAG_DONT_COUNT_TIME) {
+                int64_t start = now_us();
+                fn(arg);
+                tls_compensation_us += now_us() - start;
+            } else {
+                fn(arg);
+            }
             version.store(id_version + 2, std::memory_order_release);
             return true;
         }
@@ -155,13 +164,15 @@ public:
     };
 
     ScheduleResult schedule(Timer* timer, TimerCallback fn, void* arg,
-                            int64_t run_time_us) {
+                            int64_t run_time_us,
+                            uint32_t flags = TASK_FLAG_NONE) {
         Task* task = timer->allocate_task();
         if (task == nullptr) return {INVALID_TASK_ID, false};
 
         task->fn = fn;
         task->arg = arg;
         task->run_time_us = run_time_us;
+        task->flags = flags;
 
         uint32_t version = task->version.load(std::memory_order_relaxed);
         if (version == 0) {
@@ -283,7 +294,8 @@ void Timer::stop_and_join() {
 // Timer — schedule / unschedule
 // ============================================================================
 TaskId Timer::schedule(TimerCallback fn, void* arg,
-                       std::chrono::steady_clock::time_point at) {
+                       std::chrono::steady_clock::time_point at,
+                       uint32_t flags) {
     if (_stop.load(std::memory_order_relaxed) || !_started)
         return INVALID_TASK_ID;
 
@@ -294,7 +306,7 @@ TaskId Timer::schedule(TimerCallback fn, void* arg,
 
     int bucket_idx = fmix64(pthread_numeric_id()) % _num_buckets;
     Bucket::ScheduleResult result =
-        _buckets[bucket_idx].schedule(this, fn, arg, run_time_us);
+        _buckets[bucket_idx].schedule(this, fn, arg, run_time_us, flags);
 
     if (result.task_id == INVALID_TASK_ID)
         return INVALID_TASK_ID;
@@ -377,7 +389,7 @@ void Timer::run() {
         bool pull_again = false;
         while (!tasks.empty()) {
             Task* task1 = tasks[0];
-            if (now_us() < task1->run_time_us) break;
+            if ((now_us() - tls_compensation_us) < task1->run_time_us) break;
 
             {
                 std::lock_guard<std::mutex> lk(_mutex);
@@ -415,7 +427,7 @@ void Timer::run() {
         struct timespec timeout_ts;
         const struct timespec* tp = nullptr;
         if (next_run_time != std::numeric_limits<int64_t>::max()) {
-            int64_t delta = next_run_time - now_us();
+            int64_t delta = next_run_time - (now_us() - tls_compensation_us);
             if (delta <= 0) continue;
             timeout_ts.tv_sec = delta / 1000000;
             timeout_ts.tv_nsec = (delta % 1000000) * 1000;
