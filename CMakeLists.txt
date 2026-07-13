@@ -49,18 +49,20 @@ set(TITAN_CORE_SOURCES
     src/gs/entity/player.cpp
     src/gs/entity/npc.cpp
     # Network
-    src/gs/net/tcp_server.cpp
-    src/gs/net/tcp_connection.cpp
+    src/gs/net/tcp/server.cpp
+    src/gs/net/tcp/connection.cpp
     src/gs/net/message.cpp
-    src/gs/net/net_sync_actor.cpp
+    src/gs/net/actor/net_sync.cpp
     # Peer-to-peer
-    src/gs/net/tcp_peer.cpp
+    src/gs/net/tcp/peer.cpp
     src/gs/actor/peer_manager.cpp
     # Server
     src/gs/server/titan_server.cpp
     # Debug framework (zero-cost when TITAN_DEBUG is off)
     src/gs/debug/snapshot.cpp
     src/gs/debug/recorder.cpp
+    # Mock implementations (testing)
+    src/gs/net/mock/connection.cpp
 )
 
 add_library(titan_core STATIC ${TITAN_CORE_SOURCES})

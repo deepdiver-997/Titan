@@ -3,7 +3,7 @@
 #include "gs/common/config.h"
 #include "gs/common/types.h"
 #include "gs/net/i_server.h"
-#include "gs/net/tcp_connection.h"
+#include "gs/net/tcp/connection.h"
 
 #include <boost/asio.hpp>
 

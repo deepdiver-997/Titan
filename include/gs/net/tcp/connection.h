@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gs/net/i_connection.h"
+#include "gs/net/recv_buffer.h"
 
 #include <boost/asio.hpp>
 
@@ -8,41 +9,12 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <vector>
 
 namespace gs {
 
 using boost::asio::ip::tcp;
-
-// Thread-safe receive buffer — network thread writes, tick thread swaps.
-class RecvBuffer {
-public:
-    void append(const uint8_t* data, size_t len) {
-        std::lock_guard<std::mutex> lk(_mutex);
-        _buf.insert(_buf.end(), data, data + len);
-    }
-
-    // Atomically take all buffered data, leaving the buffer empty.
-    std::vector<uint8_t> swap_out() {
-        std::vector<uint8_t> out;
-        {
-            std::lock_guard<std::mutex> lk(_mutex);
-            out.swap(_buf);
-        }
-        return out;
-    }
-
-    size_t size() const {
-        std::lock_guard<std::mutex> lk(_mutex);
-        return _buf.size();
-    }
-
-private:
-    mutable std::mutex _mutex;
-    std::vector<uint8_t> _buf;
-};
 
 // A single TCP connection (client session).
 // Continuously does async reads, appending raw bytes to a RecvBuffer.

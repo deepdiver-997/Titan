@@ -1,4 +1,4 @@
-#include "gs/net/net_sync_actor.h"
+#include "gs/net/actor/net_sync.h"
 #include "gs/net/message.h"
 
 namespace gs {

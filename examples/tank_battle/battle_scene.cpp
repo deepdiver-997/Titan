@@ -1,6 +1,6 @@
 #include "battle_scene.h"
 #include "gs/net/message.h"
-#include "gs/net/net_sync_actor.h"
+#include "gs/net/actor/net_sync.h"
 
 #include <iostream>
 

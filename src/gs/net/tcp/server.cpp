@@ -1,4 +1,4 @@
-#include "gs/net/tcp_server.h"
+#include "gs/net/tcp/server.h"
 #include "gs/net/message.h"
 
 #include <iostream>

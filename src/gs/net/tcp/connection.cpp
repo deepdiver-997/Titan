@@ -1,4 +1,4 @@
-#include "gs/net/tcp_connection.h"
+#include "gs/net/tcp/connection.h"
 
 #include <iostream>
 

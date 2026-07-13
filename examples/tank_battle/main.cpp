@@ -2,8 +2,8 @@
 #include "gs/common/config.h"
 #include "gs/net/i_connection.h"
 #include "gs/net/message.h"
-#include "gs/net/net_sync_actor.h"
-#include "gs/net/tcp_server.h"
+#include "gs/net/actor/net_sync.h"
+#include "gs/net/tcp/server.h"
 #include "gs/server/titan_server.h"
 #include "third_party/bthread_timer/timer.h"
 

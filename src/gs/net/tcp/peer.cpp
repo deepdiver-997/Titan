@@ -1,4 +1,4 @@
-#include "gs/net/tcp_peer.h"
+#include "gs/net/tcp/peer.h"
 
 #include <iostream>
 
