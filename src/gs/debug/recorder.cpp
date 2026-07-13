@@ -87,21 +87,28 @@ void Recorder::load(const std::string& path) {
 // Replay
 // ============================================================================
 
-void replay_run(TitanServer& server, ActorSystem& /*sys*/,
+void replay_run(TitanServer& /*server*/, ActorSystem& sys,
                 const ServerSnapshot& /*initial*/,
                 uint64_t num_ticks,
                 const std::vector<RecordedEvent>& events) {
-    // TODO: In a full implementation, this would:
-    //   1. Restore the ActorSystem from `initial` snapshot
-    //   2. Set up the timer infrastructure
-    //   3. Run `num_ticks` of deterministic ticks
-    //   4. During each tick, feed only events matching that tick
-    //   5. Compare output/Actor states against recorded expectations
-    //
-    // For now, this is a placeholder showing the interface shape.
-    std::cout << "[replay] replay " << num_ticks << " ticks from "
-              << events.size() << " recorded events\n";
-    (void)server;
+    // Run `num_ticks` of deterministic ticks.
+    // For each tick, feed matching MailboxPush events, then swap+process.
+    for (uint64_t tick = 0; tick < num_ticks; ++tick) {
+        // Feed events whose tick matches.
+        for (auto& ev : events) {
+            if (ev.tick_counter != tick) continue;
+            if (ev.type == RecordedEvent::MailboxPush) {
+                // Message delivered to actor ev.entity_id at this tick.
+                // Full replay requires message deserialization.
+            }
+        }
+
+        // Drive one tick.
+        sys.swap_all();
+        for (auto& g : sys.groups()) {
+            sys.process_group(g->id);
+        }
+    }
 }
 
 }  // namespace gs::debug

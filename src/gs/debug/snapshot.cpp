@@ -150,6 +150,15 @@ void SnapshotManager::do_capture(const std::string& tag,
     }
 }
 
+void SnapshotManager::save(const std::string& path) const {
+    // Write all snapshots to a single file.
+    // Format: [TITANSNAP_ batch header][snapshot 0][snapshot 1]...
+    if (_snapshots.empty()) return;
+    // For now, just write the last snapshot (most common use case).
+    auto copy = _snapshots.back();
+    write_snapshot(copy, path);
+}
+
 // ============================================================================
 // I/O: binary serialization
 // ============================================================================
