@@ -1,5 +1,6 @@
 #include "battle_scene.h"
 #include "gs/common/config.h"
+#include "gs/net/i_connection.h"
 #include "gs/net/message.h"
 #include "gs/net/net_sync_actor.h"
 #include "gs/net/tcp_server.h"
@@ -7,6 +8,7 @@
 #include "third_party/bthread_timer/timer.h"
 
 #include <iostream>
+#include <memory>
 
 using namespace gs;
 
@@ -85,16 +87,16 @@ int main() {
     tb::BattleScene* battle_ptr = scene.get();
     ActorId scene_aid = sys.spawn(std::move(scene), grp_move);
 
-    // TCP server manages connections directly — no separate ConnectionManager.
-    TcpServer tcp_server(server.io_context(), config);
+    // Transport — swap TcpServer ↔ QuicServer ↔ etc. here.
+    auto transport = std::make_unique<TcpServer>(server.io_context(), config);
     auto grp_net = sys.create_tick_group("net_sync", 30);
-    auto net_sync = std::make_unique<NetSyncActor>(0, &tcp_server);
+    auto net_sync = std::make_unique<NetSyncActor>(0, transport.get());
     net_sync->set_name("net_sync");
     ActorId net_aid = sys.spawn(std::move(net_sync), grp_net);
     battle_ptr->set_net_sync_target(net_aid);
 
-    tcp_server.set_connection_callback(
-        [&](std::shared_ptr<TcpConnection> conn) {
+    transport->set_connection_callback(
+        [&](std::shared_ptr<IConnection> conn) {
             EntityId pid = g_next_player_id.fetch_add(1);
             // Create tank entity — spawn at (100, 100).
             auto tank = std::make_shared<tb::Tank>(pid, gs::Vec2(100, 100));
@@ -109,15 +111,15 @@ int main() {
         }
 
         conn->set_close_callback([&, pid]() {
-                tcp_server.unregister_conn(pid);
+                transport->unregister_conn(pid);
                 battle_ptr->aoi().remove_entity(pid);
             });
-            tcp_server.register_conn(pid, conn);
+            transport->register_conn(pid, conn);
         });
-    tcp_server.start();
-    server.on_stop([&]{ tcp_server.close(); });
+    transport->start();
+    server.on_stop([&]{ transport->close(); });
     // Debug API is provided programmatically (no stdin console).
-    // To drain connections: call tcp_server.drain(ip, port) directly.
+    // To drain connections: call transport->drain(ip, port) directly.
 
     // Protocol handlers.
     _handlers[0x02] = [](EntityId pid, const uint8_t* b, size_t len,
@@ -140,12 +142,12 @@ int main() {
 
     // Tick callbacks.
     server.schedule_tick(16, [&]() {
-        auto buffers = tcp_server.swap_all_buffers();
+        auto buffers = transport->swap_all_buffers();
         if (!buffers.empty()) {
             static int tick_no = 0;
             std::cout << "[input tick#" << ++tick_no << "] "
                       << buffers.size() << " connections have data, "
-                      << "total conns=" << tcp_server.conn_count()
+                      << "total conns=" << transport->conn_count()
                       << std::endl;
         }
         parse_input(buffers, sys, scene_aid);

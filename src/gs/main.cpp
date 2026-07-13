@@ -1,6 +1,6 @@
 #include "gs/common/config.h"
 #include "gs/entity/player.h"
-#include "gs/net/connection_manager.h"
+#include "gs/net/i_connection.h"
 #include "gs/net/message.h"
 #include "gs/net/net_sync_actor.h"
 #include "gs/net/tcp_server.h"
@@ -9,11 +9,11 @@
 #include "third_party/bthread_timer/timer.h"
 
 #include <iostream>
+#include <memory>
 
 using namespace gs;
 
 // ---- Application state ---------------------------------------------------
-static ConnectionManager g_conn_mgr;
 static bthread_timer::Timer g_conn_timer;
 static std::unordered_map<EntityId, std::shared_ptr<Player>> g_players;
 static std::atomic<EntityId> g_next_player_id{1};
@@ -77,37 +77,37 @@ int main() {
     SceneId sid = scene_mgr.create_scene(grp_move);
     Scene* default_scene = scene_mgr.get_scene(sid);
 
-    // 4b. TCP server.
-    TcpServer tcp_server(server.io_context(), config);
+    // 4b. Transport — swap TcpServer ↔ QuicServer ↔ etc. here.
+    auto transport = std::make_unique<TcpServer>(server.io_context(), config);
 
     // 4c. NetSyncActor — the only Actor that touches network output.
     auto grp_net = sys.create_tick_group("net_sync", 30);
-    auto net_sync = std::make_unique<NetSyncActor>(0, &tcp_server);
+    auto net_sync = std::make_unique<NetSyncActor>(0, transport.get());
     net_sync->set_name("net_sync");
     ActorId net_sync_aid = sys.spawn(std::move(net_sync), grp_net);
     if (default_scene) default_scene->set_net_sync_target(net_sync_aid);
-    tcp_server.set_connection_callback([&](std::shared_ptr<TcpConnection> conn) {
+    transport->set_connection_callback([&](std::shared_ptr<IConnection> conn) {
         EntityId pid = g_next_player_id.fetch_add(1);
         auto player = std::make_shared<Player>(
             pid, "P"+std::to_string(pid), Vec2(100.f + pid*50.f, 100.f));
 
         conn->set_close_callback([&, pid]() {
-            tcp_server.unregister_conn(pid);
+            transport->unregister_conn(pid);
             if (default_scene) default_scene->remove_entity(pid);
         });
 
-        tcp_server.register_conn(pid, conn);
+        transport->register_conn(pid, conn);
         scene_mgr.add_entity(pid, player->position(), EntityType::Player);
         g_players[pid] = player;
     });
-    tcp_server.start();
-    server.on_stop([&]{ tcp_server.close(); });
+    transport->start();
+    server.on_stop([&]{ transport->close(); });
 
     // 6. Register tick callbacks — each frequency gets its own wheel.
     //
     //    Input collection (60Hz):
     server.schedule_tick(16, [&]() {
-        auto buffers = tcp_server.swap_all_buffers();
+        auto buffers = transport->swap_all_buffers();
         parse_input(buffers, sys, scene_mgr);
         sys.swap_all();
     });
