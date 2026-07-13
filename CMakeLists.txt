@@ -59,6 +59,9 @@ set(TITAN_CORE_SOURCES
     src/gs/actor/peer_manager.cpp
     # Server
     src/gs/server/titan_server.cpp
+    # Debug framework (zero-cost when TITAN_DEBUG is off)
+    src/gs/debug/snapshot.cpp
+    src/gs/debug/recorder.cpp
 )
 
 add_library(titan_core STATIC ${TITAN_CORE_SOURCES})
@@ -77,6 +80,9 @@ add_executable(titan_server
     src/gs/main.cpp
 )
 target_link_libraries(titan_server PRIVATE titan_core)
+
+# ---- Example: gateway ----------------------------------------------------
+add_subdirectory(examples/gateway)
 
 # ---- Example: tank battle server -----------------------------------------
 add_subdirectory(examples/tank_battle)
