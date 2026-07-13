@@ -1,10 +1,9 @@
 #include "gs/net/net_sync_actor.h"
 #include "gs/net/message.h"
-#include "gs/net/tcp_server.h"
 
 namespace gs {
 
-NetSyncActor::NetSyncActor(ActorId id, TcpServer* server)
+NetSyncActor::NetSyncActor(ActorId id, IServer* server)
     : Actor(id), _server(server) {}
 
 void NetSyncActor::on_message(Message& msg) {

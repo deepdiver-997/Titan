@@ -2,12 +2,11 @@
 
 #include "gs/actor/actor.h"
 #include "gs/common/types.h"
+#include "gs/net/i_server.h"
 
 #include <string>
 
 namespace gs {
-
-class TcpServer;
 
 // Message from a game Actor to NetSyncActor: "send this to player X".
 struct ClientBoundMsg : public Message {
@@ -17,16 +16,16 @@ struct ClientBoundMsg : public Message {
 
 // Actor that owns the network output path. Other Actors send ClientBoundMsg
 // to this Actor via send_deferred(). When its tick group fires, it drains
-// its mailbox and calls tcp_server.send_to() for each message.
+// its mailbox and calls server->send_to() for each message.
 class NetSyncActor : public Actor {
 public:
-    NetSyncActor(ActorId id, TcpServer* server);
+    NetSyncActor(ActorId id, IServer* server);
 
 protected:
     void on_message(Message& msg) override;
 
 private:
-    TcpServer* _server;
+    IServer* _server;
 };
 
 }  // namespace gs

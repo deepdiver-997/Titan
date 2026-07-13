@@ -25,7 +25,7 @@ void TcpServer::close() {
 }
 
 void TcpServer::register_conn(EntityId player_id,
-                               std::shared_ptr<TcpConnection> conn) {
+                               std::shared_ptr<IConnection> conn) {
     std::lock_guard<std::mutex> lk(_conn_mutex);
     _connections[player_id] = conn;
 }
@@ -45,7 +45,7 @@ TcpServer::swap_all_buffers() {
             it = _connections.erase(it);
             continue;
         }
-        auto data = conn->recv_buffer().swap_out();
+        auto data = conn->swap_recv_buffer();
         if (!data.empty()) result[it->first] = std::move(data);
         ++it;
     }

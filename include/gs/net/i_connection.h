@@ -13,7 +13,7 @@ namespace gs {
 //
 // Each connection owns a recv buffer written by the transport layer and
 // consumed by the tick thread via swap_recv_buffer().
-class IConnection : public std::enable_shared_from_this<IConnection> {
+class IConnection {
 public:
     using CloseCallback = std::function<void()>;
 
@@ -25,7 +25,7 @@ public:
     // Close the connection.
     virtual void close() = 0;
 
-    virtual std::string remote_addr() const = 0;
+    virtual const std::string& remote_addr() const = 0;
     virtual bool is_closed() const = 0;
 
     // Atomically consume all received data since the last call.
