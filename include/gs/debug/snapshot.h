@@ -8,6 +8,10 @@
 #include <string>
 #include <vector>
 
+namespace bthread_timer {
+class Timer;
+}  // namespace bthread_timer
+
 namespace gs {
 
 class ActorSystem;
@@ -53,8 +57,15 @@ private:
 // ---- SnapshotManager — singleton -----------------------------------------
 //
 // Manages user-triggered snapshots of the entire ActorSystem.
+// Snapshots are executed **asynchronously** on the bthread_timer thread
+// with TASK_FLAG_DONT_COUNT_TIME, so virtual time freezes during capture
+// and there is no deadlock risk with process_group().
 //
-// Usage (inside a tick callback):
+// Usage:
+//   SnapshotManager::instance().set_actor_system(&sys);
+//   SnapshotManager::instance().set_timer(&server.tick_timer());
+//
+//   // Inside a tick callback:
 //   SNAPSHOT("after_input_collect");
 //
 // When TITAN_DEBUG is off, SNAPSHOT() compiles to nothing.
@@ -63,14 +74,12 @@ public:
     static SnapshotManager& instance();
 
     // Take a snapshot of all Actor state at the current point.
-    // Call this from a tick callback (or snapshot timer callback).
-    //
-    // @param tag       user-provided label (e.g. "tick_100_checkpoint")
-    // @param file      __FILE__
-    // @param line      __LINE__
+    // Schedules a one-shot TASK_FLAG_DONT_COUNT_TIME task on the
+    // bthread_timer. The actual capture runs asynchronously on the
+    // timer thread — no deadlock risk with process_group().
     void capture(const char* tag, const char* file, int line);
 
-    // Take a snapshot with a provided tick counter value.
+    // Same as capture(), with an explicit tick counter value.
     void capture_at(const char* tag, const char* file, int line,
                     uint64_t tick_counter);
 
@@ -79,8 +88,11 @@ public:
     using SnapshotCallback = std::function<void(const ServerSnapshot&)>;
     void set_callback(SnapshotCallback cb) { _callback = std::move(cb); }
 
-    // Set the ActorSystem to snapshot.
+    // Set the bthread_timer for async snapshot scheduling.
     // Must be called before any capture() calls.
+    void set_timer(bthread_timer::Timer* t) { _timer = t; }
+
+    // Set the ActorSystem to snapshot.
     void set_actor_system(ActorSystem* sys) { _actor_system = sys; }
 
     // Save all captured snapshots to a file.
@@ -97,6 +109,12 @@ public:
 private:
     SnapshotManager() = default;
 
+    // Trampoline for bthread_timer C-callback.
+    static void capture_trampoline(void* arg);
+    void do_capture(const std::string& tag, const std::string& file,
+                    int line, uint64_t tick_counter);
+
+    bthread_timer::Timer* _timer = nullptr;
     ActorSystem* _actor_system = nullptr;
     std::vector<ServerSnapshot> _snapshots;
     SnapshotCallback _callback;

@@ -1,11 +1,24 @@
 #include "gs/debug/snapshot.h"
 #include "gs/actor/actor_system.h"
+#include "third_party/bthread_timer/timer.h"
 
 #include <cstring>
 #include <fstream>
 #include <iostream>
 
 namespace gs::debug {
+
+namespace {
+
+// Context passed through bthread_timer's void* arg.
+struct CaptureCtx {
+    std::string tag;
+    std::string file;
+    int line;
+    uint64_t tick_counter;
+};
+
+}  // namespace
 
 // ============================================================================
 // SnapshotWriter
@@ -79,19 +92,55 @@ SnapshotManager& SnapshotManager::instance() {
 
 void SnapshotManager::capture(const char* tag, const char* file, int line) {
     if (!_actor_system) return;
-    capture_at(tag, file, line, 0);
+
+    if (_timer) {
+        // Schedule a one-shot DONT_COUNT_TIME task on the bthread_timer.
+        auto ctx = std::make_unique<CaptureCtx>();
+        ctx->tag = tag;
+        ctx->file = file;
+        ctx->line = line;
+        ctx->tick_counter = 0;
+        _timer->schedule(capture_trampoline, ctx.release(),
+                         std::chrono::steady_clock::now(),
+                         bthread_timer::TASK_FLAG_DONT_COUNT_TIME);
+    } else {
+        // No timer set — fall back to synchronous (e.g. in tests).
+        do_capture(tag, file, line, 0);
+    }
 }
 
 void SnapshotManager::capture_at(const char* tag, const char* file,
                                   int line, uint64_t tick_counter) {
     if (!_actor_system) return;
 
+    if (_timer) {
+        auto ctx = std::make_unique<CaptureCtx>();
+        ctx->tag = tag;
+        ctx->file = file;
+        ctx->line = line;
+        ctx->tick_counter = tick_counter;
+        _timer->schedule(capture_trampoline, ctx.release(),
+                         std::chrono::steady_clock::now(),
+                         bthread_timer::TASK_FLAG_DONT_COUNT_TIME);
+    } else {
+        do_capture(tag, file, line, tick_counter);
+    }
+}
+
+void SnapshotManager::capture_trampoline(void* arg) {
+    auto ctx = std::unique_ptr<CaptureCtx>(static_cast<CaptureCtx*>(arg));
+    instance().do_capture(ctx->tag, ctx->file, ctx->line, ctx->tick_counter);
+}
+
+void SnapshotManager::do_capture(const std::string& tag,
+                                  const std::string& file,
+                                  int line, uint64_t tick_counter) {
     ServerSnapshot snap;
     snap.tick_counter = tick_counter;
 
-    // Capture all Actor states from the ActorSystem.
-    // This grabs a shared_lock on the debug mutex to ensure no process_group
-    // is mid-execution, then copies each Actor's state data.
+    // Unique_lock on debug mutex — safe here because we're on the
+    // bthread_timer thread with virtual time frozen, so no
+    // process_group() is running.
     _actor_system->capture_all(snap.actors);
 
     _snapshots.push_back(std::move(snap));
