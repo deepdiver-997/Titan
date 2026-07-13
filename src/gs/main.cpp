@@ -107,8 +107,10 @@ int main() {
     //
     //    Input collection (60Hz):
     server.schedule_tick(16, [&]() {
-        auto buffers = transport->swap_all_buffers();
-        parse_input(buffers, sys, scene_mgr);
+        if (!server.is_replay_mode()) {
+            auto buffers = transport->swap_all_buffers();
+            parse_input(buffers, sys, scene_mgr);
+        }
         sys.swap_all();
     });
 

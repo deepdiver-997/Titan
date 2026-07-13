@@ -142,7 +142,10 @@ int main() {
 
     // Tick callbacks.
     server.schedule_tick(16, [&]() {
-        auto buffers = transport->swap_all_buffers();
+        std::unordered_map<EntityId, std::vector<uint8_t>> buffers;
+        if (!server.is_replay_mode()) {
+            buffers = transport->swap_all_buffers();
+        }
         if (!buffers.empty()) {
             static int tick_no = 0;
             std::cout << "[input tick#" << ++tick_no << "] "

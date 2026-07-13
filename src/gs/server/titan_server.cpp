@@ -1,4 +1,5 @@
 #include "gs/server/titan_server.h"
+#include "gs/debug/trace_event.h"
 
 #include <csignal>
 #include <iostream>
@@ -72,6 +73,9 @@ void TitanServer::schedule_tick(int interval_ms,
     ensure_wheel(interval_ms);
     auto* wheel = _wheels[interval_ms].wheel.get();
 
+    // Store a copy for deterministic replay (virtual tick loop).
+    _tick_callbacks.push_back({interval_ms, callback});
+
     auto task = std::make_shared<std::function<void()>>();
     *task = [wheel, interval_ms, task, cb = std::move(callback)]() {
         cb();
@@ -114,6 +118,45 @@ void TitanServer::schedule_snapshot(int interval_ms,
     _snapshot_entry->task_id = _tick_timer.schedule(
         snapshot_trampoline, _snapshot_entry.get(), at,
         bthread_timer::TASK_FLAG_DONT_COUNT_TIME);
+}
+
+// ============================================================================
+// Deterministic replay — virtual tick loop
+// ============================================================================
+
+void TitanServer::replay_run(const std::vector<gs::debug::RecordedEvent>& events,
+                              uint32_t from_tick, uint32_t num_ticks) {
+    _replay_mode.store(true, std::memory_order_relaxed);
+
+    // Base tick interval: assume 16ms (highest registered frequency).
+    // Callbacks with interval_ms 16 fire every tick, 33 fires every 2, etc.
+    uint32_t base_ms = 16;
+
+    for (uint32_t i = 0; i < num_ticks; ++i) {
+        uint32_t tick = from_tick + i;
+        _master_tick.store(tick, std::memory_order_relaxed);
+
+        // Step 1: Feed recorded events for this tick.
+        for (auto& ev : events) {
+            if (ev.tick_counter != tick) continue;
+            if (ev.type == debug::RecordedEvent::MailboxPush) {
+                // Full implementation: deserialize msg from ev.data
+                // and call _actor_system->send(ev.entity_id, msg).
+                // For now, MailboxPush is a delivery marker.
+            }
+        }
+
+        // Step 2: Fire registered tick callbacks (preserves registration order).
+        for (auto& tc : _tick_callbacks) {
+            int stride = tc.interval_ms / base_ms;
+            if (stride == 0) stride = 1;
+            if (i % stride == 0) {
+                tc.fn();
+            }
+        }
+    }
+
+    _replay_mode.store(false, std::memory_order_relaxed);
 }
 
 // ============================================================================
