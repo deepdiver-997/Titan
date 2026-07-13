@@ -8,6 +8,11 @@
 #include <string>
 #include <vector>
 
+namespace gs::debug {
+class SnapshotWriter;
+class SnapshotReader;
+}  // namespace gs::debug
+
 namespace gs {
 
 // Inter-Actor message buffered in outbox. After process_all() finishes,
@@ -53,6 +58,12 @@ public:
 
     // Drain outbox — called by ActorSystem after process_all().
     std::vector<PendingMsg> drain_outbox();
+
+    // ---- Debug: snapshot / restore ---------------------------------------
+    // Override to include custom state in debug snapshots.
+    // Default no-op — zero overhead when not used.
+    virtual void capture_state(debug::SnapshotWriter& w) { (void)w; }
+    virtual void restore_state(debug::SnapshotReader& r) { (void)r; }
 
 protected:
     virtual void on_message(Message& msg) = 0;

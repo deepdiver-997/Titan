@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -16,6 +17,10 @@ namespace gs {
 
 class PeerManager;
 
+namespace debug {
+struct ActorStateEntry;
+}  // namespace debug
+
 // Manages Actor lifecycle with tick frequency groups.
 //
 // Multi-threaded execution: call set_thread_pool() to enable parallel actor
@@ -23,6 +28,12 @@ class PeerManager;
 // group waits for all actors to finish before the next tick fires.
 //
 // Without a thread pool, process_group() runs actors serially on the caller.
+//
+// Thread safety vs snapshot:
+//   process_group() acquires a shared_lock on _debug_mutex (read lock,
+//   concurrent with other process_group calls).
+//   capture_all() acquires a unique_lock (write lock, exclusive) — it waits
+//   for all in-flight process_group calls to finish before snapshotting.
 class ActorSystem {
 public:
     using GroupId = int;
@@ -57,10 +68,13 @@ public:
     void swap_all();
     void process_all();
 
-    // ---- Debug ------------------------------------------------------------
+    // ---- Debug / Snapshot -------------------------------------------------
 
-    void debug_list() const;
     size_t actor_count() const;
+
+    // Capture all Actor states into a vector of ActorStateEntry.
+    // Acquires exclusive lock — waits for all process_group() to finish.
+    void capture_all(std::vector<debug::ActorStateEntry>& out) const;
 
     struct GroupSync {
         int version = 0;
@@ -88,6 +102,11 @@ private:
     ActorId _next_actor_id = 1;
     boost::asio::thread_pool* _pool = nullptr;
     PeerManager* _peer_mgr = nullptr;
+
+    // Debug snapshot lock.
+    // process_group() takes shared_lock (read-concurrent).
+    // capture_all()    takes unique_lock  (write-exclusive).
+    mutable std::shared_mutex _debug_mutex;
 };
 
 }  // namespace gs

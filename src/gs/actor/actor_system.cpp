@@ -1,5 +1,6 @@
 #include "gs/actor/actor_system.h"
 #include "gs/actor/peer_manager.h"
+#include "gs/debug/snapshot.h"
 
 #include <iostream>
 
@@ -37,8 +38,6 @@ ActorId ActorSystem::spawn(std::unique_ptr<Actor> actor, GroupId group) {
 
 void ActorSystem::set_peer_manager(PeerManager* pm) {
     _peer_mgr = pm;
-    // When a new peer connects, push all local Actors to it.
-    // ActorSystem's _mutex protects the iteration so spawn/sync don't race.
     pm->on_new_peer([this, pm](const std::string& addr) {
         std::lock_guard<std::mutex> lk(_mutex);
         for (const auto& [aid, actor] : _actors) {
@@ -48,6 +47,10 @@ void ActorSystem::set_peer_manager(PeerManager* pm) {
 }
 
 void ActorSystem::process_group(GroupId group) {
+    // Shared lock: concurrent with other process_group() calls,
+    // exclusive with capture_all() (snapshot).
+    std::shared_lock debug_lk(_debug_mutex);
+
     GroupInfo* g = nullptr;
     {
         std::lock_guard<std::mutex> lk(_mutex);
@@ -116,7 +119,6 @@ void ActorSystem::route_pending(ActorId /*from*/,
 }
 
 void ActorSystem::send(ActorId target, std::unique_ptr<Message> msg) {
-    // Try local first.
     {
         std::lock_guard<std::mutex> lk(_mutex);
         auto it = _actors.find(target);
@@ -125,7 +127,6 @@ void ActorSystem::send(ActorId target, std::unique_ptr<Message> msg) {
             return;
         }
     }
-    // Remote fallback — Actor is on another node.
     if (_peer_mgr) {
         _peer_mgr->send_to(target, std::move(msg));
     }
@@ -161,20 +162,30 @@ size_t ActorSystem::actor_count() const {
     return _actors.size();
 }
 
-void ActorSystem::debug_list() const {
+// ---- Debug: capture all Actor states -------------------------------------
+
+void ActorSystem::capture_all(
+    std::vector<debug::ActorStateEntry>& out) const {
+    // Exclusive lock: waits for all process_group() to finish,
+    // prevents new ones from starting during snapshot.
+    std::unique_lock debug_lk(_debug_mutex);
+
     std::lock_guard<std::mutex> lk(_mutex);
-    std::cout << "\n=== Actors ===\n";
+    out.reserve(_actors.size());
+
     for (const auto& [aid, actor] : _actors) {
-        std::cout << "  [" << aid << "] " << actor->name()
-                  << (actor->is_active() ? "" : " (paused)") << "\n";
+        debug::ActorStateEntry entry;
+        entry.actor_id = aid;
+        entry.name = actor->name();
+        entry.active = actor->is_active();
+
+        // Let the Actor serialize its custom state.
+        debug::SnapshotWriter w;
+        actor->capture_state(w);
+        entry.user_data = w.take_data();
+
+        out.push_back(std::move(entry));
     }
-    std::cout << "\n=== Tick Groups ===\n";
-    for (const auto& gp : _groups) {
-        std::cout << "  group[" << gp->id << "] \"" << gp->name
-                  << "\" @" << gp->frequency_hz << "Hz, "
-                  << gp->actor_ids.size() << " actors\n";
-    }
-    std::cout << std::endl;
 }
 
 }  // namespace gs
