@@ -181,4 +181,36 @@ void ActorSystem::capture_all(
     }
 }
 
+void ActorSystem::restore_from_snapshot(
+    const std::vector<debug::ActorStateEntry>& entries) {
+    std::unique_lock lk(_routing_mutex);
+    _actors.clear();
+    _next_actor_id = 1;
+
+    for (auto& entry : entries) {
+        // Create a lightweight proxy actor that can restore its state.
+        // The virtual restore_state() call dispatches to the original
+        // actor's deserialization logic (must match capture_state()).
+        // In a full implementation, a factory map resolves the concrete
+        // type from entry.name. For now, we create a basic actor.
+        struct PlaceholderActor : public Actor {
+            PlaceholderActor(ActorId id, const std::string& name)
+                : Actor(id, name) {}
+            void on_message(Message&) override {}
+        };
+        auto actor = std::make_unique<PlaceholderActor>(
+            entry.actor_id, entry.name);
+        actor->set_active(entry.active);
+
+        // Restore custom state via user-provided restore_state().
+        // By default Actor::restore_state() is a no-op.
+        debug::SnapshotReader r(entry.user_data);
+        actor->restore_state(r);
+
+        _actors[entry.actor_id] = std::move(actor);
+        if (entry.actor_id >= _next_actor_id)
+            _next_actor_id = entry.actor_id + 1;
+    }
+}
+
 }  // namespace gs

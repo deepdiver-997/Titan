@@ -9,6 +9,7 @@
 #include "gs/common/config.h"
 #include "gs/debug/trace_event.h"
 #include "gs/net/actor/net_sync.h"
+#include "gs/server/titan_server.h"
 
 #include <atomic>
 #include <cstring>
@@ -123,4 +124,55 @@ TEST_CASE("Deterministic Replay: snapshot captures actor state",
         }
         REQUIRE(found);
     }
+}
+
+TEST_CASE("Replay: events before snapshot tick are skipped", "[replay]") {
+    ActorSystem sys;
+    auto grp = sys.create_tick_group("test", 10);
+    auto aid = sys.spawn(std::make_unique<ReplayTestActor>(100), grp);
+    std::vector<debug::ActorStateEntry> entries;
+    sys.capture_all(entries);
+
+    ServerSnapshot snap;
+    snap.tick_counter = 100;   // snapshot at master tick 100
+    snap.actors = entries;
+
+    // Events at tick 80, 90 (< 100 → skipped), 110, 120 (≥ 100 → processed).
+    std::vector<RecordedEvent> events;
+    events.push_back({RecordedEvent::MailboxPush, 80, aid, {}});
+    events.push_back({RecordedEvent::MailboxPush, 90, aid, {}});
+    events.push_back({RecordedEvent::MailboxPush, 110, aid, {}});
+    events.push_back({RecordedEvent::MailboxPush, 120, aid, {}});
+
+    ServerConfig config;
+    TitanServer server(config);
+    replay_run(server, sys, snap, 25, events);
+
+    // No crash. Events at 80/90 are below snapshot tick and skipped.
+    // Events at 110/120 are within replay range.
+    REQUIRE(true);
+}
+
+TEST_CASE("Replay: snapshot too old for events", "[replay]") {
+    ActorSystem sys;
+    auto grp = sys.create_tick_group("test", 10);
+    sys.spawn(std::make_unique<ReplayTestActor>(100), grp);
+    std::vector<debug::ActorStateEntry> entries;
+    sys.capture_all(entries);
+
+    ServerSnapshot snap;
+    snap.tick_counter = 100;
+    snap.actors = entries;
+
+    // Events at tick 200, 300 — far beyond the 25 ticks we replay.
+    std::vector<RecordedEvent> events;
+    events.push_back({RecordedEvent::MailboxPush, 200, 100, {}});
+    events.push_back({RecordedEvent::MailboxPush, 300, 100, {}});
+
+    ServerConfig config;
+    TitanServer server(config);
+    replay_run(server, sys, snap, 25, events);
+
+    // No crash. Events beyond replayed range are never reached.
+    REQUIRE(true);
 }

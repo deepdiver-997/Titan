@@ -77,6 +77,11 @@ public:
     // Acquires exclusive lock — waits for all process_group() to finish.
     void capture_all(std::vector<debug::ActorStateEntry>& out) const;
 
+    // Restore ActorSystem from a captured snapshot.
+    // Creates placeholder Actors and calls restore_state() on each.
+    void restore_from_snapshot(
+        const std::vector<debug::ActorStateEntry>& entries);
+
     struct GroupSync {
         int version = 0;
         int pending = 0;
