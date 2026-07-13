@@ -40,6 +40,9 @@ public:
                              size_t len, uint64_t tick_counter);
     void record_actor_spawned(uint64_t actor_id, const std::string& name);
 
+    // Record a message push to an Actor's mailbox.
+    void record_mailbox_push(uint64_t actor_id, uint32_t tick);
+
     // Persist to file.
     void save(const std::string& path) const;
     void load(const std::string& path);

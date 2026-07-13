@@ -33,6 +33,7 @@ void TitanServer::wheel_tick_impl(WheelEntry& entry) {
         return;
     }
 
+    _master_tick.fetch_add(1, std::memory_order_relaxed);
     entry.wheel->tick();
     entry.reschedule_fn();
 }

@@ -1,9 +1,18 @@
 #include "gs/actor/mailbox.h"
 #include "gs/common/types.h"
 
+#ifdef TITAN_DEBUG
+#include "gs/debug/recorder.h"
+#endif
+
 namespace gs {
 
-void Mailbox::push(std::unique_ptr<Message> msg) {
+void Mailbox::push(std::unique_ptr<Message> msg, uint32_t tick) {
+#ifdef TITAN_DEBUG
+    if (_owner_id && Recorder::instance().is_recording()) {
+        Recorder::instance().record_mailbox_push(_owner_id, tick);
+    }
+#endif
     {
         std::lock_guard<std::mutex> lk(_mutex);
         _queue.push_back(std::move(msg));

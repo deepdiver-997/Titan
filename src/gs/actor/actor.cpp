@@ -2,7 +2,11 @@
 
 namespace gs {
 
-Actor::Actor(ActorId id, std::string name) : _id(id), _name(std::move(name)) {}
+Actor::Actor(ActorId id, std::string name) : _id(id), _name(std::move(name)) {
+#ifdef TITAN_DEBUG
+    _next_mailbox.set_owner(id);
+#endif
+}
 
 void Actor::send(ActorId target, std::unique_ptr<Message> msg) {
     _next_mailbox.push(std::move(msg));

@@ -65,6 +65,9 @@ public:
     TimingWheel* wheel_for_interval(int interval_ms);
     bthread_timer::Timer& tick_timer() { return _tick_timer; }
 
+    // Monotonic tick counter, incremented on every wheel tick.
+    uint32_t master_tick() const { return _master_tick.load(std::memory_order_relaxed); }
+
 private:
     struct WheelEntry {
         std::unique_ptr<TimingWheel> wheel;
@@ -104,6 +107,9 @@ private:
 
     // Tick control.
     std::atomic<bool> _paused{false};
+
+    // Monotonic master tick, incremented on every wheel tick.
+    std::atomic<uint32_t> _master_tick{0};
 
     // Optional repeating snapshot timer (direct on bthread_timer).
     std::unique_ptr<SnapshotEntry> _snapshot_entry;

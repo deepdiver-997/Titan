@@ -66,6 +66,15 @@ void Recorder::record_actor_spawned(uint64_t actor_id,
     _events.push_back(std::move(ev));
 }
 
+void Recorder::record_mailbox_push(uint64_t actor_id, uint32_t tick) {
+    if (!_recording.load()) return;
+    RecordedEvent ev;
+    ev.type = RecordedEvent::MailboxPush;
+    ev.tick_counter = tick;
+    ev.entity_id = actor_id;
+    _events.push_back(std::move(ev));
+}
+
 void Recorder::save(const std::string& path) const {
     write_events(_events, path);
 }

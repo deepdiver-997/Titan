@@ -18,6 +18,7 @@ struct RecordedEvent {
         TcpPacketIn = 0,       // TCP input from a client connection
         PeerActorMsg = 1,      // Inter-node Actor message
         ActorSpawned = 2,      // New Actor created (for replay setup)
+        MailboxPush = 3,       // Message pushed to an Actor's mailbox
     };
 
     Type type;
