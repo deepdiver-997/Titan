@@ -2,21 +2,22 @@
 
 // ---- Debug API — zero overhead when TITAN_DEBUG is not defined ------------
 //
-// Usage in user code:
+// Usage in user code (place in main(), before server.run()):
 //   #ifdef TITAN_DEBUG
 //   gs::debug::SnapshotManager::instance().set_actor_system(&sys);
+//   gs::debug::SnapshotManager::instance().set_timer(&server.tick_timer());
 //   gs::debug::Recorder::instance().start();
 //   #endif
 //
 //   server.schedule_tick(16, [&]() {
-//       auto buffers = tcp_server.swap_all_buffers();
+//       auto buffers = transport->swap_all_buffers();
 //
-//       RECORD_INPUT(buffers);         // record external input
+//       RECORD_TCP_PACKET(pid, buf.data(), buf.size(), tick);
 //
 //       parse_input(buffers, sys, scene_mgr);
 //       sys.swap_all();
 //
-//       SNAPSHOT("post_input");        // capture Actor state
+//       SNAPSHOT("post_input");   // async capture on timer thread
 //   });
 
 #ifdef TITAN_DEBUG
@@ -25,7 +26,9 @@
 #include "gs/debug/snapshot.h"
 
 // ---- Snapshot -------------------------------------------------------------
-// Capture all Actor state at this point.
+// Schedule async capture of all Actor state on the bthread_timer thread
+// with TASK_FLAG_DONT_COUNT_TIME (virtual time freezes during capture).
+// Safe to call from any context — no deadlock with process_group().
 //   SNAPSHOT("my_tag")  → records with __FILE__:__LINE__
 #define SNAPSHOT(tag)                                                          \
     do {                                                                       \
