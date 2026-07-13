@@ -80,6 +80,42 @@ void TitanServer::schedule_tick(int interval_ms,
 }
 
 // ============================================================================
+// Snapshot timer — bthread_timer with DONT_COUNT_TIME
+// ============================================================================
+
+void TitanServer::snapshot_trampoline(void* arg) {
+    auto* entry = static_cast<SnapshotEntry*>(arg);
+    if (!entry->server || !entry->server->_running.load(
+            std::memory_order_relaxed)) return;
+    if (!entry->callback) return;
+
+    entry->callback();
+
+    // Self-reschedule on bthread_timer.
+    auto at = std::chrono::steady_clock::now() +
+              std::chrono::milliseconds(entry->interval_ms);
+    entry->task_id = entry->server->_tick_timer.schedule(
+        snapshot_trampoline, entry, at,
+        bthread_timer::TASK_FLAG_DONT_COUNT_TIME);
+}
+
+void TitanServer::schedule_snapshot(int interval_ms,
+                                     std::function<void()> callback) {
+    auto entry = std::make_unique<SnapshotEntry>();
+    entry->interval_ms = interval_ms;
+    entry->callback = std::move(callback);
+    entry->server = this;
+    _snapshot_entry = std::move(entry);
+
+    // Schedule the first snapshot.
+    auto at = std::chrono::steady_clock::now() +
+              std::chrono::milliseconds(interval_ms);
+    _snapshot_entry->task_id = _tick_timer.schedule(
+        snapshot_trampoline, _snapshot_entry.get(), at,
+        bthread_timer::TASK_FLAG_DONT_COUNT_TIME);
+}
+
+// ============================================================================
 // Tick control
 // ============================================================================
 

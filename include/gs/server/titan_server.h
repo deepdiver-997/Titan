@@ -38,6 +38,15 @@ public:
     // Internally uses bthread_timer (not steady_timer) — no io_context jitter.
     void schedule_tick(int interval_ms, std::function<void()> callback);
 
+    // Register a repeating snapshot callback directly on bthread_timer.
+    // The callback is scheduled with TASK_FLAG_DONT_COUNT_TIME — its
+    // wall-clock execution time is subtracted from virtual time, so all
+    // TimingWheels appear frozen while the snapshot runs.
+    //
+    // Typical use:
+    //   server.schedule_snapshot(10, []() { SNAPSHOT("periodic"); });
+    void schedule_snapshot(int interval_ms, std::function<void()> callback);
+
     // ---- Tick control (programmatic API, not stdin) -----------------------
 
     void pause();   // suspend all wheel ticks
@@ -67,9 +76,19 @@ private:
 
     void ensure_wheel(int interval_ms);
 
+    struct SnapshotEntry {
+        bthread_timer::TaskId task_id{bthread_timer::INVALID_TASK_ID};
+        int interval_ms = 0;
+        std::function<void()> callback;
+        TitanServer* server = nullptr;
+    };
+
     // Trampoline: bthread_timer C-callback → WheelEntry
     static void wheel_tick_trampoline(void* arg);
     void wheel_tick_impl(WheelEntry& entry);
+
+    // Trampoline: bthread_timer C-callback → SnapshotEntry
+    static void snapshot_trampoline(void* arg);
 
     const ServerConfig& _config;
     boost::asio::io_context _io_context;
@@ -85,6 +104,9 @@ private:
 
     // Tick control.
     std::atomic<bool> _paused{false};
+
+    // Optional repeating snapshot timer (direct on bthread_timer).
+    std::unique_ptr<SnapshotEntry> _snapshot_entry;
 
     std::function<void()> _on_stop;
 };
