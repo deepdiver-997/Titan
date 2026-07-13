@@ -470,7 +470,68 @@ TcpServer could implement `IServer` for pluggable transports (TCP, QUIC,
 WebSocket). Currently TcpServer directly manages `weak_ptr<TcpConnection>`.
 Not urgent — single TCP transport covers the demo's needs.
 
-## 13. Production Engineering Gaps
+## 13. Gateway — Registration + Health Check
+
+The Gateway is a lightweight, stateless front-end. Clients connect to it first
+to discover which node owns which Actor. After redirection, communication is
+P2P (client ↔ game node directly).
+
+### Design
+
+```
+                    ┌─ P2P Actor messages ──────┐
+                    │                            │
+  Client ──→ Gateway (8888)                  Node A (9000)
+              │  route_table                    │  PeerManager
+              │  health_check                   │
+              ├── Node A: alive, actors=[1,2]   │
+              └── Node B: alive, actors=[3]     │
+```
+
+Gateway does NOT carry data-plane traffic:
+- Clients ask "where is scene_1?" → Gateway answers "node A:9000"
+- Clients connect directly to the node
+- Actor messages flow P2P between nodes (no Gateway hop)
+
+### Protocol
+
+```
+Client → Gateway:    "LOOKUP scene_1"  (length-prefixed)
+Gateway → Client:    "OK node_A:9000"  or "NOT_FOUND"
+
+Node → Gateway:      "PING actors=1,2,3"
+Gateway → Node:      "PONG"
+```
+
+Gateway health-checks nodes. 3 missed PINGs → node marked suspect.
+5 missed → node declared dead. Gateway rebuilds dead node's Actors on
+a surviving node by sending `SPAWN actor_id` to it.
+
+### Why Not Consensus (Raft/Paxos)?
+
+Titan uses **partition suicide** instead of distributed consensus because:
+
+1. **No shared state** — each Actor is a singleton. No data replication means
+   no conflict on recovery. Consensus solves "which replica is the truth?" —
+   Titan has no replicas.
+
+2. **Recovery = fresh creation** — when node A is declared dead, Actor X is
+   rebuilt from scratch on node B. There's no state to merge.
+
+3. **Simplicity** — Raft adds leader election, log replication, and quorum
+   overhead. Partition suicide is: "can't reach the cluster? I must be the
+   problem. Shut down."
+
+When consensus IS needed:
+- Distributed database (TiKV, etcd) — multiple replicas, writes must agree
+- Financial ledgers — transaction ordering across nodes
+- Configuration management — shared config that all nodes must agree on
+
+None of these apply to Titan's Actor routing. The Gateway is the single
+source of truth for routing — it's a SPOF, but a restartable one (just
+re-gossip on startup).
+
+## 14. Production Engineering Gaps
 
 Intentionally deferred. The project demonstrates architecture understanding,
 not production readiness:
@@ -486,7 +547,7 @@ not production readiness:
 | **IServer abstraction** | TcpServer concrete | IServer interface for QUIC/WS swap |
 | **Unified IConnection** | TcpConnection + TcpPeer separate | Merge shared protocol logic |
 
-## 14. Comparison with Production Systems
+## 15. Comparison with Production Systems
 
 | Aspect | Titan Demo | Production (e.g. skynet) |
 |--------|-----------|--------------------------|

@@ -116,14 +116,8 @@ int main() {
         });
     tcp_server.start();
     server.on_stop([&]{ tcp_server.close(); });
-    server.on_command([&](const std::string& cmd) {
-        if (cmd.rfind("drain ", 0) == 0) {
-            std::istringstream iss(cmd.substr(6));
-            std::string ip; int port = 0;
-            iss >> ip >> port;
-            if (!ip.empty() && port > 0) tcp_server.drain(ip, port);
-        }
-    });
+    // Debug API is provided programmatically (no stdin console).
+    // To drain connections: call tcp_server.drain(ip, port) directly.
 
     // Protocol handlers.
     _handlers[0x02] = [](EntityId pid, const uint8_t* b, size_t len,
