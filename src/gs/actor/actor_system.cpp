@@ -175,7 +175,7 @@ void ActorSystem::capture_all(
 
     for (const auto& [aid, actor] : _actors) {
         debug::ActorStateEntry entry;
-        entry.actor_id = aid;
+        entry.actor_id = actor->id();
         entry.name = actor->name();
         entry.active = actor->is_active();
 

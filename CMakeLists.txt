@@ -76,6 +76,9 @@ target_link_libraries(titan_core PUBLIC
     timing_wheel
 )
 
+# ---- Tests ----------------------------------------------------------------
+add_subdirectory(tests)
+
 # ---- Main executable -----------------------------------------------------
 add_executable(titan_server
     src/gs/main.cpp
