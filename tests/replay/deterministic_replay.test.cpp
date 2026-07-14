@@ -146,7 +146,8 @@ TEST_CASE("Replay: events before snapshot tick are skipped", "[replay]") {
 
     ServerConfig config;
     TitanServer server(config);
-    replay_run(server, sys, snap, 25, events);
+    server.init();
+    server.reload_state(snap, events);
 
     // No crash. Events at 80/90 are below snapshot tick and skipped.
     // Events at 110/120 are within replay range.
@@ -171,7 +172,8 @@ TEST_CASE("Replay: snapshot too old for events", "[replay]") {
 
     ServerConfig config;
     TitanServer server(config);
-    replay_run(server, sys, snap, 25, events);
+    server.init();
+    server.reload_state(snap, events);
 
     // No crash. Events beyond replayed range are never reached.
     REQUIRE(true);

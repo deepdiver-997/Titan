@@ -2,6 +2,7 @@
 
 #include "gs/actor/actor_system.h"
 #include "gs/common/config.h"
+#include "gs/debug/trace_event.h"
 #include "third_party/bthread_timer/timer.h"
 #include "third_party/timing_wheel/timing_wheel.h"
 
@@ -75,16 +76,14 @@ public:
     // Monotonic tick counter, incremented on every wheel tick.
     uint32_t master_tick() const { return _master_tick.load(std::memory_order_relaxed); }
 
-    // ---- Replay (deterministic) -------------------------------------------
+    // ---- Disaster recovery ------------------------------------------------
 
-    // True when running in replay mode (virtual tick loop, no real bthread_timer).
-    bool is_replay_mode() const { return _replay_mode.load(std::memory_order_relaxed); }
-
-    // Run `num_ticks` of deterministic replay starting from `from_tick`.
-    // During replay, parse callbacks check is_replay_mode() and skip real TCP reads.
-    // Events are fed directly to ActorSystem::send() before each tick's callbacks.
-    void replay_run(const std::vector<gs::debug::RecordedEvent>& events,
-                    uint32_t from_tick, uint32_t num_ticks);
+    // Reload server state from a snapshot and replay recorded events.
+    // Called during startup, before any network I/O or timer scheduling.
+    // After reload_state() completes, the server is ready for live operation
+    // with _master_tick set to max(events) + 1.
+    void reload_state(const debug::ServerSnapshot& snapshot,
+                      const std::vector<gs::debug::RecordedEvent>& events);
 
 private:
     struct WheelEntry {
@@ -112,13 +111,6 @@ private:
     static void snapshot_trampoline(void* arg);
 
     // Registered tick callbacks (ordered by registration).
-    // During live mode the TimingWheel drives them; during replay
-    // TitanServer::replay_run() iterates this list directly.
-    struct TickCallback {
-        int interval_ms;
-        std::function<void()> fn;
-    };
-    std::vector<TickCallback> _tick_callbacks;
 
     const ServerConfig& _config;
     boost::asio::io_context _io_context;
@@ -137,9 +129,6 @@ private:
 
     // Monotonic master tick, incremented on every wheel tick.
     std::atomic<uint32_t> _master_tick{0};
-
-    // Replay mode flag — when true, parse callbacks skip TCP reads.
-    std::atomic<bool> _replay_mode{false};
 
     // Optional repeating snapshot timer (direct on bthread_timer).
     std::unique_ptr<SnapshotEntry> _snapshot_entry;

@@ -63,12 +63,7 @@ private:
 // Usage:
 //   auto snap = read_snapshot("init.snap");
 //   auto events = read_events("session.trace");
-//   server.replay_run(snap, 100, events);  // replay 100 master ticks
+//   server.reload_state(snap, events);  // disaster recovery
 //
-void replay_run(TitanServer& server, ActorSystem& sys,
-                const ServerSnapshot& initial,
-                uint64_t num_ticks,
-                const std::vector<RecordedEvent>& events);
-
 }  // namespace debug
 }  // namespace gs

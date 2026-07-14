@@ -73,9 +73,6 @@ void TitanServer::schedule_tick(int interval_ms,
     ensure_wheel(interval_ms);
     auto* wheel = _wheels[interval_ms].wheel.get();
 
-    // Store a copy for deterministic replay (virtual tick loop).
-    _tick_callbacks.push_back({interval_ms, callback});
-
     auto task = std::make_shared<std::function<void()>>();
     *task = [wheel, interval_ms, task, cb = std::move(callback)]() {
         cb();
@@ -121,42 +118,51 @@ void TitanServer::schedule_snapshot(int interval_ms,
 }
 
 // ============================================================================
-// Deterministic replay — virtual tick loop
+// Disaster recovery — reload from snapshot
 // ============================================================================
 
-void TitanServer::replay_run(const std::vector<gs::debug::RecordedEvent>& events,
-                              uint32_t from_tick, uint32_t num_ticks) {
-    _replay_mode.store(true, std::memory_order_relaxed);
+void TitanServer::reload_state(const debug::ServerSnapshot& snapshot,
+                                const std::vector<debug::RecordedEvent>& events) {
+    // Restore actors from the snapshot.
+    _actor_system->restore_from_snapshot(snapshot.actors);
+    _master_tick.store(snapshot.tick_counter, std::memory_order_relaxed);
 
-    // Base tick interval: assume 16ms (highest registered frequency).
-    // Callbacks with interval_ms 16 fire every tick, 33 fires every 2, etc.
-    uint32_t base_ms = 16;
+    // Find the latest event tick so we know how many ticks to replay.
+    uint32_t max_event_tick = snapshot.tick_counter;
+    // Filter events: those before snapshot.tick_counter are discarded.
+    std::vector<const debug::RecordedEvent*> filtered;
+    for (auto& ev : events) {
+        if (ev.tick_counter >= snapshot.tick_counter) {
+            filtered.push_back(&ev);
+            if (ev.tick_counter > max_event_tick)
+                max_event_tick = ev.tick_counter;
+        }
+    }
 
-    for (uint32_t i = 0; i < num_ticks; ++i) {
-        uint32_t tick = from_tick + i;
-        _master_tick.store(tick, std::memory_order_relaxed);
+    // Replay tick by tick (swap_all + process_group only, no callbacks).
+    for (uint32_t t = snapshot.tick_counter; t <= max_event_tick; ++t) {
+        _master_tick.store(t, std::memory_order_relaxed);
 
-        // Step 1: Feed recorded events for this tick.
-        for (auto& ev : events) {
-            if (ev.tick_counter != tick) continue;
-            if (ev.type == debug::RecordedEvent::MailboxPush) {
-                // Full implementation: deserialize msg from ev.data
-                // and call _actor_system->send(ev.entity_id, msg).
+        // Feed events for this tick.
+        for (auto* ev : filtered) {
+            if (ev->tick_counter != t) continue;
+
+            if (ev->type == debug::RecordedEvent::MailboxPush) {
+                // Full replay: deserialize message from ev->data
+                // and call _actor_system->send(ev->entity_id, msg).
                 // For now, MailboxPush is a delivery marker.
             }
         }
 
-        // Step 2: Fire registered tick callbacks (preserves registration order).
-        for (auto& tc : _tick_callbacks) {
-            int stride = tc.interval_ms / base_ms;
-            if (stride == 0) stride = 1;
-            if (i % stride == 0) {
-                tc.fn();
-            }
+        // Process this tick.
+        _actor_system->swap_all();
+        for (auto& g : _actor_system->groups()) {
+            _actor_system->process_group(g->id);
         }
     }
 
-    _replay_mode.store(false, std::memory_order_relaxed);
+    // Set master tick past the replayed range.
+    _master_tick.store(max_event_tick + 1, std::memory_order_relaxed);
 }
 
 // ============================================================================

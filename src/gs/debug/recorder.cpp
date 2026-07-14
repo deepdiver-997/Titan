@@ -84,31 +84,7 @@ void Recorder::load(const std::string& path) {
 }
 
 // ============================================================================
-// Replay
+// Replay (moved to TitanServer::reload_state)
 // ============================================================================
-
-void replay_run(TitanServer& /*server*/, ActorSystem& sys,
-                const ServerSnapshot& /*initial*/,
-                uint64_t num_ticks,
-                const std::vector<RecordedEvent>& events) {
-    // Run `num_ticks` of deterministic ticks.
-    // For each tick, feed matching MailboxPush events, then swap+process.
-    for (uint64_t tick = 0; tick < num_ticks; ++tick) {
-        // Feed events whose tick matches.
-        for (auto& ev : events) {
-            if (ev.tick_counter != tick) continue;
-            if (ev.type == RecordedEvent::MailboxPush) {
-                // Message delivered to actor ev.entity_id at this tick.
-                // Full replay requires message deserialization.
-            }
-        }
-
-        // Drive one tick.
-        sys.swap_all();
-        for (auto& g : sys.groups()) {
-            sys.process_group(g->id);
-        }
-    }
-}
 
 }  // namespace gs::debug
