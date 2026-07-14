@@ -13,6 +13,13 @@ void TitanServer::init() {
     std::cout << "[titan] init framework" << std::endl;
     _actor_system = std::make_unique<ActorSystem>();
     _actor_system->set_thread_pool(&_worker_pool);
+
+    // Start the bthread_timer now so schedule_tick() calls during
+    // setup (before run()) can register wheel pulse tasks.
+    bthread_timer::TimerOptions opts;
+    opts.num_buckets = _config.bt_num_buckets;
+    opts.task_pool_size = _config.bt_task_pool_size;
+    _tick_timer.start(opts);
 }
 
 // ============================================================================
@@ -64,8 +71,11 @@ void TitanServer::ensure_wheel(int interval_ms) {
             wheel_tick_trampoline, &stored, at);
     };
 
-    // First tick.
-    stored.reschedule_fn();
+    // Schedule the first tick directly (bypasses _running check).
+    auto at = std::chrono::steady_clock::now() +
+              std::chrono::milliseconds(interval_ms);
+    stored.tick_task_id = _tick_timer.schedule(
+        wheel_tick_trampoline, &stored, at);
 }
 
 void TitanServer::schedule_tick(int interval_ms,
@@ -199,12 +209,6 @@ static void signal_handler(int sig) {
 
 void TitanServer::run() {
     _running.store(true);
-
-    // Start bthread_timer (drives all wheels on its dedicated thread).
-    bthread_timer::TimerOptions opts;
-    opts.num_buckets = _config.bt_num_buckets;
-    opts.task_pool_size = _config.bt_task_pool_size;
-    _tick_timer.start(opts);
 
     // Register signal handlers.
     std::signal(SIGINT, signal_handler);
