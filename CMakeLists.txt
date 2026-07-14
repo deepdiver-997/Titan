@@ -25,6 +25,9 @@ add_library(bthread_timer STATIC
 target_include_directories(bthread_timer PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/bthread_timer
 )
+if(WIN32)
+    target_compile_definitions(bthread_timer PRIVATE _WIN32_WINNT=0x0601)
+endif()
 if(NOT WIN32)
     target_link_libraries(bthread_timer PUBLIC pthread)
 endif()

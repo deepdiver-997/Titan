@@ -1,4 +1,11 @@
-find_package(Catch2 REQUIRED)
+# Always fetch Catch2 v3 via FetchContent for consistency across platforms.
+include(FetchContent)
+FetchContent_Declare(Catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+    GIT_TAG v3.7.1
+)
+FetchContent_MakeAvailable(Catch2)
+list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 
 # ---- Test executable -------------------------------------------------------
 add_executable(titan_tests

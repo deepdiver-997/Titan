@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <vector>
 
 namespace bthread_timer {
 
