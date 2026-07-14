@@ -19,6 +19,10 @@ void Timer::set_thread_name() {
     pthread_setname_np("timer");
 #elif defined(__linux__)
     pthread_setname_np(pthread_self(), "timer");
+#elif defined(_WIN32)
+    // Windows 10 1607+: SetThreadDescription(GetCurrentThread(), L"timer");
+    // For broader compatibility, use the win32 RaiseException trick or just skip.
+    // The thread name is for debugging only; name_for_thread() is non-critical.
 #endif
 }
 

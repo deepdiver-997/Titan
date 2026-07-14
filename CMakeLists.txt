@@ -25,7 +25,9 @@ add_library(bthread_timer STATIC
 target_include_directories(bthread_timer PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/bthread_timer
 )
-target_link_libraries(bthread_timer PUBLIC pthread)
+if(NOT WIN32)
+    target_link_libraries(bthread_timer PUBLIC pthread)
+endif()
 
 # ---- Third-party: timing_wheel (skynet-style hierarchical wheel) ---------
 add_library(timing_wheel STATIC
