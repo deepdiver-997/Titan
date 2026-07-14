@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -27,17 +28,17 @@ struct TimerOptions {
 };
 
 // A high-precision, high-performance timer backed by a dedicated
-// thread. Uses kqueue (EVFILT_USER + kevent timeout) for sleep/wake
-// on macOS.
+// thread. Cross-platform — uses std::condition_variable for sleep/wake
+// (no epoll/kqueue), so it works on macOS, Linux, and Windows.
 //
 // Architecture overview (modeled after brpc's TimerThread):
-// 1. Timer thread sleeps via kevent() with a computed timeout.
+// 1. Timer thread sleeps via condition_variable::wait_until() with
+//    the computed next deadline.
 // 2. Tasks are hashed by caller thread-id into N buckets, each with
 //    its own mutex + linked list, to reduce contention.
 // 3. Each bucket tracks its earliest deadline; the timer maintains a
 //    global _nearest_run_time_us (under _mutex).  Scheduling threads
-//    that lower it trigger EVFILT_USER to wake the timer thread,
-//    with _wake_pending ensuring only one thread makes the syscall.
+//    that lower it signal _wake_cv to wake the timer thread.
 // 4. On wake-up the timer thread: swaps out every bucket's list,
 //    pushes un-cancelled tasks into a min-heap, then pops and runs
 //    every ready task (not cancelled + deadline reached).
@@ -88,19 +89,17 @@ private:
 
     // ---- time helpers -----------------------------------------------------
     static int64_t now_us();
+    static void set_thread_name();
 
     // ---- data members -----------------------------------------------------
     std::unique_ptr<Bucket[]> _buckets;
     int _num_buckets = 0;
 
-    // Protects _nearest_run_time_us.  Same role as brpc's _mutex:
-    // serialises updates from schedulers and the timer thread's
-    // sleep-commit point.
+    // Protects _nearest_run_time_us + _wake_cv sleep/wake sequencing.
     std::mutex _mutex;
+    std::condition_variable _wake_cv;
+    bool _wake_signaled = false;  // true → timer thread should re-check
     int64_t _nearest_run_time_us = std::numeric_limits<int64_t>::max();
-
-    int _kq = -1;
-    std::atomic<bool> _wake_pending{false};
 
     std::atomic<bool> _stop{false};
     bool _started = false;

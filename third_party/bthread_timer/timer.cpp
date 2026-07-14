@@ -2,36 +2,25 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <pthread.h>
-#include <sys/event.h>
-#include <unistd.h>
 
 namespace bthread_timer {
 
 thread_local int64_t tls_compensation_us = 0;
 
 // ============================================================================
-// MurmurHash3 finalisation mix (fmix64) — same hash as brpc
+// Portable thread hash (replaces macOS-only pthread_threadid_np)
 // ============================================================================
-static inline uint64_t fmix64(uint64_t k) {
-    k ^= k >> 33;
-    k *= 0xff51afd7ed558ccdULL;
-    k ^= k >> 33;
-    k *= 0xc4ceb9fe1a85ec53ULL;
-    k ^= k >> 33;
-    return k;
+static inline uint64_t thread_hash_id() {
+    return std::hash<std::thread::id>{}(std::this_thread::get_id());
 }
 
-static inline uint64_t pthread_numeric_id() {
-    uint64_t id;
-    pthread_threadid_np(pthread_self(), &id);
-    return id;
+void Timer::set_thread_name() {
+#if defined(__APPLE__)
+    pthread_setname_np("timer");
+#elif defined(__linux__)
+    pthread_setname_np(pthread_self(), "timer");
+#endif
 }
-
-// ============================================================================
-// kqueue ident for EVFILT_USER wake-up
-// ============================================================================
-static constexpr uintptr_t KQ_WAKE_IDENT = 1;
 
 // ============================================================================
 // TaskId encoding (same as brpc: version << 32 | slot)
@@ -230,10 +219,6 @@ Timer::Timer() = default;
 
 Timer::~Timer() {
     stop_and_join();
-    if (_kq >= 0) {
-        close(_kq);
-        _kq = -1;
-    }
 }
 
 int Timer::start(const TimerOptions& options) {
@@ -243,23 +228,10 @@ int Timer::start(const TimerOptions& options) {
     if (options.task_pool_size < 2 || options.task_pool_size > (1 << 20))
         return EINVAL;
 
-    _kq = kqueue();
-    if (_kq < 0) return errno;
-
-    struct kevent ev;
-    EV_SET(&ev, KQ_WAKE_IDENT, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, nullptr);
-    if (kevent(_kq, &ev, 1, nullptr, 0, nullptr) < 0) {
-        close(_kq);
-        _kq = -1;
-        return errno;
-    }
-
     _buckets.reset(new Bucket[options.num_buckets]);
     _num_buckets = options.num_buckets;
 
     if (!init_task_pool(options.task_pool_size)) {
-        close(_kq);
-        _kq = -1;
         return ENOMEM;
     }
 
@@ -276,13 +248,9 @@ void Timer::stop_and_join() {
     {
         std::lock_guard<std::mutex> lk(_mutex);
         _nearest_run_time_us = 0;
+        _wake_signaled = true;
     }
-
-    if (!_wake_pending.exchange(true, std::memory_order_acq_rel)) {
-        struct kevent ev;
-        EV_SET(&ev, KQ_WAKE_IDENT, EVFILT_USER, 0, NOTE_TRIGGER, 0, nullptr);
-        kevent(_kq, &ev, 1, nullptr, 0, nullptr);
-    }
+    _wake_cv.notify_one();
 
     if (std::this_thread::get_id() != _thread.get_id()) {
         _thread.join();
@@ -304,7 +272,7 @@ TaskId Timer::schedule(TimerCallback fn, void* arg,
             at.time_since_epoch())
             .count();
 
-    int bucket_idx = fmix64(pthread_numeric_id()) % _num_buckets;
+    int bucket_idx = thread_hash_id() % _num_buckets;
     Bucket::ScheduleResult result =
         _buckets[bucket_idx].schedule(this, fn, arg, run_time_us, flags);
 
@@ -317,16 +285,12 @@ TaskId Timer::schedule(TimerCallback fn, void* arg,
             std::lock_guard<std::mutex> lk(_mutex);
             if (run_time_us < _nearest_run_time_us) {
                 _nearest_run_time_us = run_time_us;
+                _wake_signaled = true;
                 need_wake = true;
             }
         }
         if (need_wake) {
-            if (!_wake_pending.exchange(true, std::memory_order_acq_rel)) {
-                struct kevent ev;
-                EV_SET(&ev, KQ_WAKE_IDENT, EVFILT_USER, 0,
-                       NOTE_TRIGGER, 0, nullptr);
-                kevent(_kq, &ev, 1, nullptr, 0, nullptr);
-            }
+            _wake_cv.notify_one();
         }
     }
     return result.task_id;
@@ -357,13 +321,13 @@ bool Timer::task_run_time_greater(const Task* a, const Task* b) {
 }
 
 void Timer::run() {
-    pthread_setname_np("timer");
+    set_thread_name();
 
     std::vector<Task*> tasks;
     tasks.reserve(4096);
 
     while (!_stop.load(std::memory_order_relaxed)) {
-        // ---- Step 1: Reset nearest, check stop ---------------------------
+        // ---- Step 1: Reset nearest -----------------------------------------
         {
             std::lock_guard<std::mutex> lk(_mutex);
             if (_stop.load(std::memory_order_relaxed)) break;
@@ -406,36 +370,39 @@ void Timer::run() {
         }
         if (pull_again) continue;
 
-        // ---- Step 4: Sleep via kevent -----------------------------------
+        // ---- Step 4: Sleep via cond_var ----------------------------------
         int64_t next_run_time = std::numeric_limits<int64_t>::max();
         if (!tasks.empty()) next_run_time = tasks[0]->run_time_us;
 
         {
-            std::lock_guard<std::mutex> lk(_mutex);
+            std::unique_lock<std::mutex> lk(_mutex);
             if (next_run_time > _nearest_run_time_us) {
                 continue;  // newer earlier task, re-pull buckets
             }
             _nearest_run_time_us = next_run_time;
-            // Publish sleep intent + clear wake flag atomically within
-            // the critical section.  Any scheduler that lowers
-            // _nearest_run_time_us after this point will see
-            // _wake_pending==false and trigger EVFILT_USER, so the
-            // following kevent() will return immediately.
-            _wake_pending.store(false, std::memory_order_release);
-        }
 
-        struct timespec timeout_ts;
-        const struct timespec* tp = nullptr;
-        if (next_run_time != std::numeric_limits<int64_t>::max()) {
-            int64_t delta = next_run_time - (now_us() - tls_compensation_us);
-            if (delta <= 0) continue;
-            timeout_ts.tv_sec = delta / 1000000;
-            timeout_ts.tv_nsec = (delta % 1000000) * 1000;
-            tp = &timeout_ts;
-        }
+            // Compute absolute timeout.
+            if (next_run_time != std::numeric_limits<int64_t>::max()) {
+                int64_t delta = next_run_time - (now_us() - tls_compensation_us);
+                if (delta <= 0) continue;  // already overdue, re-check
 
-        struct kevent ev;
-        kevent(_kq, nullptr, 0, &ev, 1, tp);
+                auto deadline = std::chrono::steady_clock::now() +
+                    std::chrono::microseconds(delta);
+
+                // Wait until deadline OR a scheduling thread signals us.
+                _wake_signaled = false;
+                _wake_cv.wait_until(lk, deadline, [this]() {
+                    return _stop.load(std::memory_order_relaxed) || _wake_signaled;
+                });
+            } else {
+                // No pending tasks — wait indefinitely for a schedule() call.
+                _wake_signaled = false;
+                _wake_cv.wait(lk, [this]() {
+                    return _stop.load(std::memory_order_relaxed) || _wake_signaled;
+                });
+            }
+            // On wake: lk is re-acquired, scope ends → mutex released.
+        }
     }
 }
 
