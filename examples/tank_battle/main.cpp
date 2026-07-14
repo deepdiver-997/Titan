@@ -7,7 +7,7 @@
 #include "gs/server/titan_server.h"
 #include "third_party/bthread_timer/timer.h"
 
-#include <iostream>
+#include "gs/common/logger.h"
 #include <memory>
 
 using namespace gs;
@@ -43,21 +43,20 @@ static void parse_input(
             // Debug: print every message received.
             const char* tname = type == 0x02 ? "MOVE" :
                                 type == 0x06 ? "FIRE" : "???";
-            std::cout << "[parse#" << call_count << "] player=" << player_id
-                      << " type=0x" << std::hex << (int)type << std::dec
-                      << "(" << tname << ") body_len=" << blen;
+            LOG_SCENE_DEBUG("[parse#{}] player={} type=0x{:x}({}) body_len={}",
+                              call_count, player_id, (int)type, tname, blen);
             if (type == 0x02 && blen >= 8) {
                 float x, y;
                 std::memcpy(&x, body, 4);
                 std::memcpy(&y, body + 4, 4);
-                std::cout << " pos=(" << x << "," << y << ")";
+                LOG_SCENE_DEBUG(" pos=({},{})", x, y);
             } else if (type == 0x06 && blen >= 8) {
                 float dx, dy;
                 std::memcpy(&dx, body, 4);
                 std::memcpy(&dy, body + 4, 4);
-                std::cout << " dir=(" << dx << "," << dy << ")";
+                LOG_SCENE_DEBUG(" dir=({},{})", dx, dy);
             }
-            std::cout << std::endl;
+
 
             auto it = _handlers.find(type);
             if (it != _handlers.end()) {
@@ -71,7 +70,8 @@ static void parse_input(
 
 // ---- main ----------------------------------------------------------------
 int main() {
-    std::cout << "=== Titan Tank Battle Server ===" << std::endl;
+    Logger::instance().init("titan", 0);
+    LOG_MAIN_INFO("=== Titan Tank Battle Server ===");
 
     ServerConfig config;
 
@@ -145,10 +145,8 @@ int main() {
         auto buffers = transport->swap_all_buffers();
         if (!buffers.empty()) {
             static int tick_no = 0;
-            std::cout << "[input tick#" << ++tick_no << "] "
-                      << buffers.size() << " connections have data, "
-                      << "total conns=" << transport->conn_count()
-                      << std::endl;
+            LOG_SCENE_DEBUG("[input tick#{}] {} connections have data, total conns={}",
+                              ++tick_no, buffers.size(), transport->conn_count());
         }
         parse_input(buffers, sys, scene_aid);
         sys.swap_all();
@@ -160,6 +158,6 @@ int main() {
     server.schedule_tick(33, [&]{ sys.process_group(grp_net); });
 
     server.run();
-    std::cout << "[main] stopped." << std::endl;
-    return 0;
+    LOG_MAIN_INFO("stopped.");
+    Logger::instance().destroy();    return 0;
 }

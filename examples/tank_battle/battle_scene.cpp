@@ -2,6 +2,7 @@
 #include "gs/net/message.h"
 #include "gs/net/actor/net_sync.h"
 
+#include "gs/common/logger.h"
 #include <iostream>
 
 namespace tb {
@@ -63,7 +64,7 @@ void BattleScene::tick_bullets(int dt_ms) {
         if (!bullet->is_alive()) {
             aoi().remove_entity(bid);
             it = _bullets.erase(it);
-            std::cout << "[battle] bullet " << bid << " expired" << std::endl;
+            LOG_SCENE_TRACE("bullet {} expired", bid);
             continue;
         }
         gs::Vec2 np = bullet->tick(bs, dt_ms);
