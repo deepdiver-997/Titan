@@ -289,24 +289,25 @@ Payload starts with 1-byte message type:
 - `0x03` Chat
 - `0x04` AOI Event (type: uint8, entity_id: uint64, x: float32, y: float32)
 
-## 6. Debug & Tick Control Console
+## 6. Debug & Deterministic Replay
 
-### Design
+The original stdin-based debug console has been replaced by a **programmatic
+C++ API** with zero-overhead release builds (`#ifdef TITAN_DEBUG`). See
+[`replay.md`](replay.md) for full documentation.
 
-Modeled after the Simulation Battle System's `mode step` / `debug break` pattern.
-A background thread reads stdin commands while the game loop runs on io_context.
+Key components:
 
-### Commands
+- **SnapshotManager**: captures all Actor states asynchronously on the
+  bthread_timer thread with `TASK_FLAG_DONT_COUNT_TIME` (virtual time
+  freezes during capture). Safe to call from any tick callback.
+- **Recorder**: records external inputs (TCP packets, peer messages) tagged
+  with the current master tick for deterministic replay.
+- **TitanServer::reload_state()**: disaster recovery — restores from a
+  snapshot, replays recorded events tick-by-tick (`swap_all + process_group`),
+  then advances `_master_tick` past the replayed range.
 
-```
-list              — print all actors and tick groups (like `ps ax`)
-pause             — suspend ALL tick wheels (world frozen)
-resume            — restart all wheels
-step N            — run N ticks on all wheels, then pause again
-pwheel <ms>       — pause only the wheel at interval_ms
-rwheel <ms>       — resume only the wheel at interval_ms
-stop              — graceful shutdown (also SIGINT)
-```
+Tick control (pause/resume) is still available as a programmatic API. The
+stdin console thread and `handle_command()` have been removed.
 
 ### Selective Wheel Control
 
@@ -559,3 +560,13 @@ not production readiness:
 | Persistence | None | Redis/MySQL for player state |
 | Scene mgmt | Static partition | Dynamic split by load |
 | Fault tolerance | None | Actor supervision + state recovery |
+
+## Appendix: Document Index
+
+Titan's documentation is split into focused files to keep `architecture.md`
+from growing too large. Each file covers one subsystem in depth.
+
+| Document | Covers |
+|----------|--------|
+| `architecture.md` | (this file) High-level architecture, Actor model, AOI, timers, networking, gateway, design trade-offs |
+| `replay.md` | Deterministic record/replay, snapshot system, `reload_state` disaster recovery, limitations |
