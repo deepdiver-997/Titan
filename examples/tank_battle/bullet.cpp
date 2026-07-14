@@ -2,9 +2,11 @@
 
 namespace tb {
 
-Bullet::Bullet(gs::EntityId id, const gs::Vec2& pos, const gs::Vec2& velocity,
+Bullet::Bullet(gs::EntityId id, gs::EntityId owner,
+               const gs::Vec2& pos, const gs::Vec2& velocity,
                int lifetime_ms)
     : gs::Entity(id, gs::EntityType::Bullet),
+      _owner(owner),
       _velocity(velocity),
       _lifetime_ms(lifetime_ms) {
     set_position(pos);

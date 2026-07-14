@@ -51,10 +51,9 @@ void BattleScene::spawn_bullet(gs::EntityId owner, const gs::Vec2& pos,
                                 const gs::Vec2& dir) {
     gs::EntityId bid = _next_bullet_id++;
     gs::Vec2 vel(dir.x * 300.0f, dir.y * 300.0f);
-    _bullets[bid] = std::make_shared<Bullet>(bid, pos, vel, 3000);
+    _bullets[bid] = std::make_shared<Bullet>(bid, owner, pos, vel, 3000);
     register_in_aoi(bid, pos, gs::EntityType::Bullet);
-    std::cout << "[battle] player " << owner << " fired bullet "
-              << bid << std::endl;
+    LOG_SCENE_INFO("player {} fired bullet {} at ({},{})", owner, bid, pos.x, pos.y);
 }
 
 void BattleScene::tick_bullets(int dt_ms) {
@@ -69,6 +68,32 @@ void BattleScene::tick_bullets(int dt_ms) {
         }
         gs::Vec2 np = bullet->tick(bs, dt_ms);
         move_in_aoi(bid, np);
+
+        // ---- Collision detection ------------------------------------------
+        // Brute-force check against all tanks.  In a production server this
+        // would use AOI::query() for spatial filtering — the AOI grid already
+        // partitions the world into 16m cells, so query(np, radius) returns
+        // only entities in neighbouring cells.
+        // See NineGridAoi for the query interface.
+        bool hit = false;
+        gs::EntityId hit_target = 0;
+        for (auto& [tid, tank] : _tanks) {
+            if (tid == bullet->owner()) continue;  // skip shooter
+            float dx = np.x - tank.position().x;
+            float dy = np.y - tank.position().y;
+            if (dx * dx + dy * dy < 64.0f) {  // radius 8.0f
+                hit = true;
+                hit_target = tid;
+                break;
+            }
+        }
+        if (hit) {
+            LOG_SCENE_INFO("bullet {} hit tank {}!", bid, hit_target);
+            aoi().remove_entity(bid);
+            it = _bullets.erase(it);
+            // TODO: apply damage, spawn explosion effect, etc.
+            continue;
+        }
         ++it;
     }
 }
