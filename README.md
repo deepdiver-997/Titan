@@ -71,15 +71,19 @@ make -j$(sysctl -n hw.ncpu)
 # w/a/s/d move, f fire, q quit
 ```
 
-### Debug Console (stdin)
 
-```
-list           — show all actors and tick groups
-pause/resume   — freeze/unfreeze all wheels
-step N         — run N ticks then pause
-pwheel <ms>    — pause specific frequency wheel
-drain <ip> <port> — redirect clients to new instance
-```
+## License
+
+MIT License. See [LICENSE](LICENSE).
+
+## References
+
+The timer architecture design references:
+- [brpc](https://github.com/apache/brpc) — TimerThread (multi-bucket, task pool, min-heap)
+- [skynet](https://github.com/cloudwu/skynet) — hierarchical TimingWheel
+
+External dependencies (Boost.Asio, spdlog, fmt, Catch2, raylib) are used via
+package managers and are not included in this repository.
 
 ## Key Design Decisions
 

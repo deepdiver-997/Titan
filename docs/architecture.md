@@ -190,6 +190,13 @@ Key distinction:
 - TimingWheel: tick() is **called by you** (from steady_timer or main loop)
 - bthread_timer: run() is **internal** (dedicated thread with kqueue sleep/wake)
 
+### References
+
+- **brpc TimerThread**: the bthread_timer design (multi-bucket, task pool, min-heap)
+  is modeled after [brpc's TimerThread](https://github.com/apache/brpc).
+- **skynet TimingWheel**: the hierarchical TimingWheel data structure follows
+  the same algorithm as [skynet](https://github.com/cloudwu/skynet).
+
 ## 4. Main Loop Architecture
 
 ### Event Loop
