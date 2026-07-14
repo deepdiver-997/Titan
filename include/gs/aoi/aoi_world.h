@@ -3,6 +3,8 @@
 #include "gs/aoi/aoi_entity.h"
 #include "gs/aoi/aoi_grid.h"
 #include "gs/aoi/i_aoi.h"
+
+#include <memory>
 #include "gs/common/types.h"
 
 #include <functional>
