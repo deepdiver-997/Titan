@@ -1,8 +1,8 @@
 #include "gs/server/titan_server.h"
+#include "gs/common/logger.h"
 #include "gs/debug/trace_event.h"
 
 #include <csignal>
-#include <iostream>
 #include <sstream>
 
 namespace gs {
@@ -10,7 +10,7 @@ namespace gs {
 TitanServer::TitanServer(const ServerConfig& config) : _config(config) {}
 
 void TitanServer::init() {
-    std::cout << "[titan] init framework" << std::endl;
+    LOG_SRV_INFO("init framework");
     _actor_system = std::make_unique<ActorSystem>();
     _actor_system->set_thread_pool(&_worker_pool);
 
@@ -181,12 +181,12 @@ void TitanServer::reload_state(const debug::ServerSnapshot& snapshot,
 
 void TitanServer::pause() {
     _paused.store(true);
-    std::cout << "[titan] PAUSED — all wheels suspended\n";
+    LOG_SRV_INFO("PAUSED — all wheels suspended");
 }
 
 void TitanServer::resume() {
     _paused.store(false);
-    std::cout << "[titan] RESUMED — wheels running\n";
+    LOG_SRV_INFO("RESUMED — wheels running");
 }
 
 TimingWheel* TitanServer::wheel_for_interval(int interval_ms) {
@@ -214,8 +214,7 @@ void TitanServer::run() {
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
-    std::cout << "[titan] starting (" << _wheels.size()
-              << " wheels, bthread_timer driven)\n";
+    LOG_SRV_INFO("starting ({} wheels, bthread_timer driven)", _wheels.size());
 
     // io_context runs on its own thread (network I/O, not tick scheduling).
     std::thread io_thread([this]() {
@@ -228,8 +227,7 @@ void TitanServer::run() {
     }
 
     if (g_signal_flag != 0) {
-        std::cout << "[titan] signal " << g_signal_flag
-                  << ", shutting down\n";
+        LOG_SRV_INFO("signal {}, shutting down", g_signal_flag);
     }
 
     stop();
@@ -237,7 +235,7 @@ void TitanServer::run() {
     io_thread.join();
 
     // _tick_timer.stop_and_join() is called in stop().
-    std::cout << "[titan] stopped.\n";
+    LOG_SRV_INFO("stopped.");
 }
 
 void TitanServer::stop() {

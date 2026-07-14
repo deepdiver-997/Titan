@@ -1,6 +1,6 @@
 #include "gs/net/tcp/connection.h"
 
-#include <iostream>
+#include "gs/common/logger.h"
 
 namespace gs {
 
@@ -78,7 +78,7 @@ void TcpConnection::do_write(std::vector<uint8_t> data) {
 
 void TcpConnection::handle_error(const std::string& what) {
     if (!_closed) {
-        std::cerr << "[connection " << _remote_addr << "] " << what << std::endl;
+        LOG_NET_ERROR("[{}] {}", _remote_addr, what);
         close();
     }
 }

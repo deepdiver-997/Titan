@@ -14,6 +14,10 @@ endif()
 set(Boost_NO_BOOST_CMAKE ON CACHE BOOL "Disable BoostConfig package mode" FORCE)
 find_package(Boost REQUIRED)
 
+# ---- spdlog (structured logging) ------------------------------------------
+find_package(spdlog REQUIRED)
+find_package(fmt REQUIRED)
+
 # ---- Third-party: bthread_timer (brpc-style high-precision timer) --------
 add_library(bthread_timer STATIC
     third_party/bthread_timer/timer.cpp
@@ -33,6 +37,8 @@ target_include_directories(timing_wheel PUBLIC
 
 # ---- Titan game server core ----------------------------------------------
 set(TITAN_CORE_SOURCES
+    # Common
+    src/gs/common/logger.cpp
     # Actor system
     src/gs/actor/mailbox.cpp
     src/gs/actor/actor.cpp
@@ -74,6 +80,8 @@ target_include_directories(titan_core PUBLIC
 target_link_libraries(titan_core PUBLIC
     bthread_timer
     timing_wheel
+    spdlog::spdlog
+    fmt::fmt
 )
 
 # ---- Tests ----------------------------------------------------------------

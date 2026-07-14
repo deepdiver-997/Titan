@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include "gs/common/logger.h"
 #include <iostream>
 
 namespace gs::debug {
@@ -21,12 +22,12 @@ Recorder& Recorder::instance() {
 void Recorder::start() {
     _events.clear();
     _recording.store(true);
-    std::cout << "[recorder] started recording\n";
+    LOG_DBG_INFO("started recording");
 }
 
 void Recorder::stop() {
     _recording.store(false);
-    std::cout << "[recorder] stopped (" << _events.size() << " events)\n";
+    LOG_DBG_INFO("stopped ({} events)", _events.size());
 }
 
 void Recorder::clear() {

@@ -1,6 +1,7 @@
 #include "gs/actor/peer_manager.h"
 #include "gs/net/tcp/peer.h"
 
+#include "gs/common/logger.h"
 #include <iostream>
 
 namespace gs {
@@ -14,7 +15,7 @@ PeerManager::PeerManager(boost::asio::io_context& io,
                boost::asio::ip::make_address(listen_addr), listen_port))
 {
     _known_nodes.insert(_my_addr);
-    std::cout << "[peer] listening on " << _my_addr << std::endl;
+    LOG_PEER_INFO("listening on {}", _my_addr);
 }
 
 void PeerManager::start_accept() { do_accept(); }
@@ -39,7 +40,7 @@ void PeerManager::do_accept() {
             // Gossip the new node + sync local actors.
             gossip_new_node(addr);
             if (_new_peer_cb) _new_peer_cb(addr);
-            std::cout << "[peer] accepted " << addr << std::endl;
+            LOG_PEER_INFO("accepted {}", addr);
             do_accept();
         });
 }
@@ -66,7 +67,7 @@ void PeerManager::connect_to_peer(const std::string& ip, uint16_t port) {
     // Gossip new node + push local actors to new peer.
     gossip_new_node(addr);
     if (_new_peer_cb) _new_peer_cb(addr);
-    std::cout << "[peer] connected to " << addr << std::endl;
+    LOG_PEER_INFO("connected to {}", addr);
 }
 
 void PeerManager::broadcast_register(ActorId aid) {
@@ -118,7 +119,7 @@ void PeerManager::handle_peer_data(const std::string& peer_addr,
     case 0xE0: {  // REGISTER_ACTOR
         ActorId aid; std::memcpy(&aid, payload.data(), 8);
         _routes[aid] = peer_addr;
-        std::cout << "[peer] remote actor " << aid << " @ " << peer_addr << std::endl;
+        LOG_PEER_INFO("remote actor {} @ {}", aid, peer_addr);
         break;
     }
     case 0xE1: {  // UNREGISTER_ACTOR

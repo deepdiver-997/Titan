@@ -1,4 +1,5 @@
 #include "gs/net/tcp/server.h"
+#include "gs/common/logger.h"
 #include "gs/net/message.h"
 
 #include <iostream>
@@ -13,8 +14,7 @@ TcpServer::TcpServer(boost::asio::io_context& io_context,
           boost::asio::ip::make_address(config.listen_address),
           config.listen_port))
 {
-    std::cout << "[tcp_server] listening on " << config.listen_address
-              << ":" << config.listen_port << std::endl;
+    LOG_NET_INFO("listening on {}:{}", config.listen_address, config.listen_port);
 }
 
 void TcpServer::start() { do_accept(); }
@@ -68,8 +68,7 @@ size_t TcpServer::conn_count() const {
 }
 
 void TcpServer::drain(const std::string& new_ip, uint16_t new_port) {
-    std::cout << "[tcp_server] draining → redirecting clients to "
-              << new_ip << ":" << new_port << std::endl;
+    LOG_NET_INFO("draining → redirecting clients to {}:{}", new_ip, new_port);
 
     // Build REDIRECT packet: [type 0xF0][ip_len 1B][ip str][port 2B]
     std::vector<uint8_t> payload;
@@ -98,8 +97,7 @@ void TcpServer::do_accept() {
         [this](boost::system::error_code ec, tcp::socket socket) {
             if (ec) {
                 if (ec != boost::asio::error::operation_aborted)
-                    std::cerr << "[tcp_server] accept error: "
-                              << ec.message() << std::endl;
+                    LOG_NET_ERROR("accept error: {}", ec.message());
                 return;
             }
             auto conn = std::make_shared<TcpConnection>(std::move(socket));

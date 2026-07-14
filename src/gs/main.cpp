@@ -1,4 +1,5 @@
 #include "gs/common/config.h"
+#include "gs/common/logger.h"
 #include "gs/entity/player.h"
 #include "gs/net/i_connection.h"
 #include "gs/net/message.h"
@@ -49,10 +50,10 @@ static void parse_input(
     }
 }
 
-
 // ---- main ----------------------------------------------------------------
 int main() {
-    std::cout << "=== Titan Game Server v1.0.0 ===" << std::endl;
+    Logger::instance().init("titan", 0);
+    LOG_MAIN_INFO("=== Titan Game Server v1.0.0 ===");
 
     ServerConfig config;
 
@@ -104,15 +105,12 @@ int main() {
     server.on_stop([&]{ transport->close(); });
 
     // 6. Register tick callbacks — each frequency gets its own wheel.
-    //
-    //    Input collection (60Hz):
     server.schedule_tick(16, [&]() {
-            auto buffers = transport->swap_all_buffers();
-            parse_input(buffers, sys, scene_mgr);
+        auto buffers = transport->swap_all_buffers();
+        parse_input(buffers, sys, scene_mgr);
         sys.swap_all();
     });
 
-    //    Tick groups — each at its own frequency, independent wheels.
     server.schedule_tick(16,  [&]{ sys.process_group(grp_skill); });
     server.schedule_tick(33,  [&]{ sys.process_group(grp_move);  });
     server.schedule_tick(100, [&]{ sys.process_group(grp_aoi);   });
@@ -121,6 +119,7 @@ int main() {
     // 7. Run.
     server.run();
     g_conn_timer.stop_and_join();
-    std::cout << "[main] stopped." << std::endl;
+    LOG_MAIN_INFO("stopped.");
+    Logger::instance().destroy();
     return 0;
 }
