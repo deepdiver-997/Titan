@@ -67,6 +67,9 @@ set(TITAN_CORE_SOURCES
     # Peer-to-peer
     src/gs/net/tcp/peer.cpp
     src/gs/actor/peer_manager.cpp
+    # Protocol: Session + SessionManager
+    src/gs/net/protocol/session.cpp
+    src/gs/net/protocol/session_manager.cpp
     # Server
     src/gs/server/titan_server.cpp
     # Debug framework (zero-cost when TITAN_DEBUG is off)
