@@ -176,6 +176,35 @@ void TitanServer::reload_state(const debug::ServerSnapshot& snapshot,
 }
 
 // ============================================================================
+// Session management
+// ============================================================================
+
+void TitanServer::send_to_entity(EntityId eid, uint8_t channel,
+                                   const std::vector<uint8_t>& data) {
+    auto it = _entity_to_session.find(eid);
+    if (it == _entity_to_session.end()) {
+        LOG_NET_WARN("send_to_entity: no session for entity {}", eid);
+        return;
+    }
+    auto* session = _session_mgr.find(it->second);
+    if (!session || !session->is_alive()) {
+        LOG_NET_WARN("send_to_entity: session {} dead for entity {}",
+                     it->second, eid);
+        _entity_to_session.erase(it);
+        return;
+    }
+    session->send(channel, data);
+}
+
+SessionId TitanServer::accept_session(std::shared_ptr<IConnection> conn) {
+    // Defer to SessionManager. The actual bind happens on the next
+    // tick when bind_pending() is called. The user receives the new
+    // SessionId via SessionManager::set_session_callback().
+    _session_mgr.add_connection(std::move(conn));
+    return INVALID_SESSION_ID;
+}
+
+// ============================================================================
 // Tick control
 // ============================================================================
 

@@ -4,7 +4,16 @@
 namespace gs {
 
 NetSyncActor::NetSyncActor(ActorId id, IServer* server)
-    : Actor(id), _server(server) {}
+    : Actor(id)
+{
+    _send_cb = [server](EntityId eid, uint8_t /*channel*/,
+                        const std::vector<uint8_t>& data) {
+        server->send_to(eid, data);
+    };
+}
+
+NetSyncActor::NetSyncActor(ActorId id, SendCallback send_cb)
+    : Actor(id), _send_cb(std::move(send_cb)) {}
 
 void NetSyncActor::on_message(Message& msg) {
     auto* client_msg = dynamic_cast<ClientBoundMsg*>(&msg);
@@ -12,7 +21,8 @@ void NetSyncActor::on_message(Message& msg) {
 
     std::vector<uint8_t> bytes(client_msg->data.begin(),
                                client_msg->data.end());
-    _server->send_to(client_msg->target_player, encode_message(bytes));
+    _send_cb(client_msg->target_player, client_msg->channel,
+             encode_message(bytes));
 }
 
 }  // namespace gs
