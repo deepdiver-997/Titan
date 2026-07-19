@@ -2,9 +2,7 @@
 
 #include "gs/actor/actor_system.h"
 #include "gs/common/config.h"
-#include "gs/common/types.h"
 #include "gs/debug/trace_event.h"
-#include "gs/net/protocol/session_manager.h"
 #include "third_party/bthread_timer/timer.h"
 #include "third_party/timing_wheel/timing_wheel.h"
 
@@ -78,25 +76,7 @@ public:
     // Monotonic tick counter, incremented on every wheel tick.
     uint32_t master_tick() const { return _master_tick.load(std::memory_order_relaxed); }
 
-    // ---- Session management ------------------------------------------------
 
-    // Access the server's SessionManager.
-    SessionManager& session_mgr() { return _session_mgr; }
-
-    // Bind an EntityId to a Session so send_to_entity() routes output.
-    void map_entity_to_session(EntityId eid, SessionId sid) {
-        _entity_to_session[eid] = sid;
-    }
-
-    // Send data to an entity via its session mapping.
-    // @param channel 0=reliable (TCP/QUIC), 1=unreliable (UDP)
-    void send_to_entity(EntityId eid, uint8_t channel,
-                        const std::vector<uint8_t>& data);
-
-    // Accept a new IConnection and bind it to a session by reading the
-    // first packet's header. Returns the SessionId, or INVALID_SESSION_ID
-    // if the bind packet is incomplete (caller should retry next tick).
-    SessionId accept_session(std::shared_ptr<IConnection> conn);
 
     // ---- Disaster recovery ------------------------------------------------
 
@@ -156,8 +136,6 @@ private:
     std::unique_ptr<SnapshotEntry> _snapshot_entry;
 
     // Session management.
-    SessionManager _session_mgr;
-    std::unordered_map<EntityId, SessionId> _entity_to_session;
 
     std::function<void()> _on_stop;
 };
