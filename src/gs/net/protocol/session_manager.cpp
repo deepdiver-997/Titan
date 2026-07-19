@@ -6,80 +6,86 @@
 namespace gs {
 
 void SessionManager::add_connection(std::shared_ptr<IConnection> conn) {
+    std::lock_guard lk(_mgr_mutex);
     _pending.push_back(std::move(conn));
 }
 
 void SessionManager::bind_pending() {
-    if (_pending.empty()) return;
+    // Swap under lock, process outside so callbacks can safely
+    // call add_connection() without deadlock.
+    decltype(_pending) local;
+    {
+        std::lock_guard lk(_mgr_mutex);
+        local.swap(_pending);
+    }
+    if (local.empty()) return;
 
-    for (auto& conn : _pending) {
+    for (auto& conn : local) {
         auto raw = conn->swap_recv_buffer();
         if (raw.size() < sizeof(SessionHeader)) {
-            // Not enough data yet — wait for next tick.
-            // Re-queue by putting data back (swap is destructive).
-            // Instead, just skip. The data stays in the conn buffer.
-            // Actually swap_recv_buffer is destructive. We need to
-            // put the data back. But we can't re-queue conn easily.
-            // Solution: skip bind for now, leave conn in _pending
-            // by NOT calling drain_all — but we already consumed the buffer.
-            //
-            // Better approach: keep _pending and retry on next tick.
-            // The conn buffer was consumed — we lost the data.
-            // So we need to NOT consume it until we can bind.
-            // For now, push conn back to try again.
-            // This works because we only peek at the buffer header.
-            // Actually no — swap_recv_buffer destructively reads.
-            // We need to NOT swap until we're sure there's enough data.
-            //
-            // FIXME: We consume the buffer on each attempt. For production
-            // this would use a separate peek mechanism. For now, just
-            // re-queue and hope next tick has more data.
+            // Not enough data yet — re-queue for next tick.
+            std::lock_guard lk(_mgr_mutex);
             _pending.push_back(conn);
             continue;
         }
 
         auto* hdr = reinterpret_cast<SessionHeader*>(raw.data());
-        uint16_t plen = (static_cast<uint16_t>(hdr->payload_len_be >> 8) |
-                         static_cast<uint16_t>(hdr->payload_len_be & 0xFF));
+        SessionId sid = INVALID_SESSION_ID;
 
         if (hdr->session_id != 0) {
-            // Bind to existing session.
+            // Re-bind to existing session.
+            std::lock_guard lk(_mgr_mutex);
             auto it = _sessions.find(hdr->session_id);
-            if (it != _sessions.end()) {
-                it->second.attach(hdr->channel, conn);
-                if (_session_cb) _session_cb(it->second);
-            } else {
-                LOG_NET_WARN("bind: session {} not found, closing", hdr->session_id);
+            if (it == _sessions.end()) {
+                LOG_NET_WARN("bind: session {} not found", hdr->session_id);
                 conn->close();
+                continue;
             }
-            continue;
+            it->second.attach(hdr->channel, conn);
+            sid = hdr->session_id;
+        } else {
+            // New session.
+            std::lock_guard lk(_mgr_mutex);
+            sid = next_id();
+            auto [it, ok] = _sessions.try_emplace(sid, sid);
+            it->second.attach(hdr->channel, conn);
+            LOG_NET_INFO("new session {} channel {}", sid, (int)hdr->channel);
         }
 
-        // New session: assign an ID.
-        SessionId sid = next_id();
-        auto [it, ok] = _sessions.try_emplace(sid, sid);
-        it->second.attach(hdr->channel, conn);
-        LOG_NET_INFO("new session {} channel {}", sid, (int)hdr->channel);
-
-        // Re-write the bind response with the assigned session_id.
-        // The client now knows its session_id for future connections.
-        // In practice the client receives this via the first server message.
-        if (_session_cb) _session_cb(it->second);
+        // Callback outside lock.
+        if (_session_cb && sid != INVALID_SESSION_ID) {
+            auto* s = find(sid);
+            if (s) _session_cb(*s);
+        }
     }
-    _pending.clear();
 }
 
 Session* SessionManager::find(SessionId id) {
+    std::lock_guard lk(_mgr_mutex);
     auto it = _sessions.find(id);
     return it != _sessions.end() ? &it->second : nullptr;
 }
 
 void SessionManager::remove(SessionId id) {
+    std::lock_guard lk(_mgr_mutex);
     auto it = _sessions.find(id);
     if (it == _sessions.end()) return;
     it->second.close();
     _sessions.erase(it);
     if (_close_cb) _close_cb(id);
+}
+
+void SessionManager::for_each(std::function<void(Session&)> cb) {
+    std::vector<SessionId> ids;
+    {
+        std::lock_guard lk(_mgr_mutex);
+        ids.reserve(_sessions.size());
+        for (auto& [sid, _] : _sessions) ids.push_back(sid);
+    }
+    for (auto sid : ids) {
+        auto* s = find(sid);
+        if (s) cb(*s);
+    }
 }
 
 }  // namespace gs

@@ -3,79 +3,58 @@
 #include "gs/actor/actor.h"
 #include "gs/common/types.h"
 #include "gs/net/i_server.h"
-#include "gs/net/protocol/session_manager.h"
 
 #include <functional>
 #include <string>
-#include <unordered_map>
+#include <vector>
 
 namespace gs {
 
-// ---- Messages --------------------------------------------------------------
+// ---- Message types ---------------------------------------------------------
 
-// A new raw transport connection arrived. The NetSyncActor should bind
-// it to a Session by reading the first packet's protocol header.
-// Posted from the transport callback via ActorSystem::send().
+// A new raw transport connection arrived. Route this to your network
+// Actor's mailbox so it can be bound to a Session via SessionManager.
 struct NewConnectionMsg : public Message {
     std::shared_ptr<IConnection> conn;
 };
 
-// Send data to a specific player. Other Actors send this via
-// send_deferred(). The NetSyncActor routes through Session channels.
+// Send data to a specific player. Route this to your network Actor.
 struct ClientBoundMsg : public Message {
     EntityId target_player;
-    uint8_t channel = 0;    // 0=reliable (TCP), 1=unreliable (UDP)
+    uint8_t channel = 0;    // 0=reliable, 1=unreliable
     std::string data;
 };
 
-// ---- NetSyncActor ----------------------------------------------------------
+// ---- Network Helper Actors --------------------------------------------------
 
-// Actor that owns all network output and Session lifecycle.
-// Thread-confined: runs on the actor thread (via process_group),
-// so SessionManager operations need no locks.
+// Lightweight network output actor.
 //
-// Two send modes:
-//   1. Session mode: routes through _entity_map → Session.send(channel).
-//      Requires map_entity() calls from session_callback.
-//   2. Legacy IServer mode: calls server->send_to(eid, data) directly,
-//      channel ignored. Created via the IServer* constructor.
+// Mode 1 — IServer* (legacy): calls server->send_to(eid, data).
+//   NetSyncActor(ActorId id, IServer* server)
+//
+// Mode 2 — SendCallback (flexible):
+//   NetSyncActor(ActorId id, [&](EntityId eid, uint8_t ch, auto& data) {
+//       session_mgr.find(entity_map[eid])->send(ch, data);
+//   });
+//
+// For multiple output frequencies, create several NetSyncActors in
+// different tick groups, each with its own callback.
 class NetSyncActor : public Actor {
 public:
-    using SessionCallback = std::function<void(Session&)>;
+    using SendCallback = std::function<void(EntityId, uint8_t,
+                                            const std::vector<uint8_t>&)>;
 
-    // ---- Constructors ------------------------------------------------------
-
-    // Session mode (default). Call map_entity() to link players.
-    NetSyncActor(ActorId id);
-
-    // Legacy: send via IServer, no session/channel support.
+    // Legacy: send via IServer (channel always 0).
     NetSyncActor(ActorId id, IServer* server);
 
-    // ---- Session management ------------------------------------------------
-
-    SessionManager& session_mgr() { return _session_mgr; }
-
-    // Link an EntityId to a Session for send routing.
-    void map_entity(EntityId eid, SessionId sid) {
-        _entity_map[eid] = sid;
-    }
-
-    // Callback when a new Session is bound (at least one channel ready).
-    // The user should create their player entity and call map_entity() here.
-    void set_session_callback(SessionCallback cb) {
-        _session_mgr.set_session_callback(std::move(cb));
-    }
+    // Flexible: user-provided send callback.
+    NetSyncActor(ActorId id, SendCallback send_cb);
 
 protected:
     void on_message(Message& msg) override;
 
 private:
-    void send_via_session(EntityId target, uint8_t channel,
-                          const std::vector<uint8_t>& data);
-
-    SessionManager _session_mgr;
-    std::unordered_map<EntityId, SessionId> _entity_map;
-    IServer* _legacy_server = nullptr;  // non-null = legacy mode
+    SendCallback _send_cb;
 };
 
 }  // namespace gs
