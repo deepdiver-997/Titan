@@ -1,6 +1,7 @@
 #include "gs/server/titan_server.h"
 #include "gs/common/logger.h"
 #include "gs/debug/trace_event.h"
+#include "gs/net/channel.h"
 
 #include <csignal>
 #include <sstream>
@@ -88,6 +89,78 @@ void TitanServer::schedule_tick(int interval_ms,
         wheel->addTask(interval_ms, *task);
     };
     wheel->addTask(interval_ms, *task);
+}
+// =====
+// IO frequency groups — like tick groups but for network IO
+// ============================================================================
+
+void TitanServer::IoGroup::trampoline(void* arg) {
+    static_cast<IoGroup*>(arg)->tick();
+}
+
+void TitanServer::IoGroup::tick() {
+    if (!server || !server->_running.load(std::memory_order_relaxed)) return;
+
+    std::vector<std::shared_ptr<Channel>> active;
+    {
+        std::lock_guard lk(mtx);
+        for (auto it = channels.begin(); it != channels.end();) {
+            if (auto ch = it->lock()) {
+                active.push_back(std::move(ch));
+                ++it;
+            } else {
+                it = channels.erase(it);
+            }
+        }
+    }
+
+    for (auto& ch : active) {
+        ch->flush();
+    }
+
+    // Self-reschedule.
+    if (server->_running.load(std::memory_order_relaxed)) {
+        auto at = std::chrono::steady_clock::now() +
+                  std::chrono::milliseconds(interval_ms);
+        server->_tick_timer.schedule(trampoline, this, at);
+    }
+}
+
+TitanServer::IoGroupHandle TitanServer::create_io_group(int interval_ms) {
+    auto g = std::make_unique<IoGroup>();
+    g->interval_ms = interval_ms;
+    g->server = this;
+    g->handle = _next_io_handle;
+
+    // Schedule the first tick.
+    auto at = std::chrono::steady_clock::now() +
+              std::chrono::milliseconds(interval_ms);
+    _tick_timer.schedule(&IoGroup::trampoline, g.get(), at);
+
+    auto handle = _next_io_handle++;
+    _io_groups[handle] = std::move(g);
+    return handle;
+}
+
+void TitanServer::add_to_io_group(IoGroupHandle handle,
+                                   std::shared_ptr<Channel> ch) {
+    auto it = _io_groups.find(handle);
+    if (it == _io_groups.end()) return;
+    std::lock_guard lk(it->second->mtx);
+    it->second->channels.push_back(ch);
+}
+
+void TitanServer::remove_from_io_group(IoGroupHandle handle, Channel* ch) {
+    auto it = _io_groups.find(handle);
+    if (it == _io_groups.end()) return;
+    std::lock_guard lk(it->second->mtx);
+    auto& vec = it->second->channels;
+    vec.erase(std::remove_if(vec.begin(), vec.end(),
+        [ch](const std::weak_ptr<Channel>& wp) {
+            auto sp = wp.lock();
+            return !sp || sp.get() == ch;
+        }),
+        vec.end());
 }
 // =====
 // Snapshot timer — bthread_timer with DONT_COUNT_TIME

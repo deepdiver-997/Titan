@@ -1,13 +1,13 @@
 #include "gs/common/config.h"
 #include "gs/common/logger.h"
 #include "gs/entity/player.h"
+#include "gs/net/channel.h"
 #include "gs/net/i_connection.h"
 #include "gs/net/message.h"
-#include "gs/net/actor/net_sync.h"
+#include "gs/net/protocol/session_manager.h"
 #include "gs/net/tcp/server.h"
 #include "gs/scene/scene_manager.h"
 #include "gs/server/titan_server.h"
-#include "third_party/bthread_timer/timer.h"
 
 #include <iostream>
 #include <memory>
@@ -15,37 +15,28 @@
 using namespace gs;
 
 // ---- Application state ---------------------------------------------------
-static bthread_timer::Timer g_conn_timer;
-static std::unordered_map<EntityId, std::shared_ptr<Player>> g_players;
+static std::unordered_map<EntityId, std::shared_ptr<Channel>> g_channels;
+static std::unordered_map<SessionId, EntityId> g_session_to_entity;
 static std::atomic<EntityId> g_next_player_id{1};
 
-// ---- Parse TCP data → push to Scene Actors ------------------------------
-static void parse_input(
-    const std::unordered_map<EntityId, std::vector<uint8_t>>& buffers,
-    ActorSystem& sys, SceneManager& scene_mgr) {
-    for (const auto& [player_id, raw] : buffers) {
-        size_t off = 0;
-        while (off + 4 <= raw.size()) {
-            uint32_t len = (static_cast<uint32_t>(raw[off]) << 24) |
-                           (static_cast<uint32_t>(raw[off+1]) << 16) |
-                           (static_cast<uint32_t>(raw[off+2]) << 8) |
-                           static_cast<uint32_t>(raw[off+3]);
-            if (off + 4 + len > raw.size()) break;
-            off += 4;
-            if (len == 0) continue;
+// ---- Parse session packets → push to Scene Actors ------------------------
+static void parse_packet(EntityId player_id,
+                         const std::vector<uint8_t>& payload,
+                         ActorSystem& sys, SceneManager& scene_mgr) {
+    if (payload.empty()) return;
+    MsgType type = static_cast<MsgType>(payload[0]);
+    const uint8_t* body = payload.data() + 1;
+    size_t body_len = payload.size() - 1;
 
-            if (raw[off] == static_cast<uint8_t>(MsgType::Move) && len >= 9) {
-                Vec2 pos;
-                std::memcpy(&pos.x, raw.data() + off + 1, 4);
-                std::memcpy(&pos.y, raw.data() + off + 5, 4);
-                for (auto sid : scene_mgr.scene_ids()) {
-                    auto msg = std::make_unique<MoveMessage>();
-                    msg->player_id = player_id;
-                    msg->new_pos = pos;
-                    sys.send(static_cast<ActorId>(sid), std::move(msg));
-                }
-            }
-            off += len;
+    if (type == MsgType::Move && body_len >= 8) {
+        Vec2 pos;
+        std::memcpy(&pos.x, body, 4);
+        std::memcpy(&pos.y, body + 4, 4);
+        for (auto sid : scene_mgr.scene_ids()) {
+            auto msg = std::make_unique<MoveMessage>();
+            msg->player_id = player_id;
+            msg->new_pos = pos;
+            sys.send(static_cast<ActorId>(sid), std::move(msg));
         }
     }
 }
@@ -61,11 +52,9 @@ int main() {
     TitanServer server(config);
     server.init();
 
-    // 2. Network timeout timer.
-    bthread_timer::TimerOptions bt_opts;
-    bt_opts.num_buckets = config.bt_num_buckets;
-    bt_opts.task_pool_size = config.bt_task_pool_size;
-    g_conn_timer.start(bt_opts);
+    // 2. Session management + IO frequency group for channel flushing.
+    SessionManager session_mgr;
+    auto io_grp = server.create_io_group(33);  // ~30 Hz flush
 
     // 3. Tick groups.
     auto& sys = server.actor_system();
@@ -78,47 +67,60 @@ int main() {
     SceneId sid = scene_mgr.create_scene(grp_move);
     Scene* default_scene = scene_mgr.get_scene(sid);
 
-    // 4b. Transport — swap TcpServer ↔ QuicServer ↔ etc. here.
+    // 5. Transport.
     auto transport = std::make_unique<TcpServer>(server.io_context(), config);
-
-    // 4c. NetSyncActor — the only Actor that touches network output.
-    auto grp_net = sys.create_tick_group("net_sync", 30);
-    auto net_sync = std::make_unique<NetSyncActor>(0, transport.get());
-    net_sync->set_name("net_sync");
-    ActorId net_sync_aid = sys.spawn(std::move(net_sync), grp_net);
-    if (default_scene) default_scene->set_net_sync_target(net_sync_aid);
     transport->set_connection_callback([&](std::shared_ptr<IConnection> conn) {
-        EntityId pid = g_next_player_id.fetch_add(1);
-        auto player = std::make_shared<Player>(
-            pid, "P"+std::to_string(pid), Vec2(100.f + pid*50.f, 100.f));
-
-        conn->set_close_callback([&, pid]() {
-            transport->unregister_conn(pid);
-            if (default_scene) default_scene->remove_entity(pid);
-        });
-
-        transport->register_conn(pid, conn);
-        scene_mgr.add_entity(pid, player->position(), EntityType::Player);
-        g_players[pid] = player;
+        session_mgr.add_connection(conn);
     });
     transport->start();
     server.on_stop([&]{ transport->close(); });
 
-    // 6. Register tick callbacks — each frequency gets its own wheel.
+    // 6. Session lifecycle: create entity + channel on new session.
+    session_mgr.set_session_callback([&](std::shared_ptr<Session> session) {
+        EntityId pid = g_next_player_id.fetch_add(1);
+        auto player = std::make_shared<Player>(
+            pid, "P"+std::to_string(pid), Vec2(100.f + pid*50.f, 100.f));
+
+        // Create reliable channel bound to this session.
+        auto ch = std::make_shared<Channel>(session, 0);
+        server.add_to_io_group(io_grp, ch);
+        g_channels[pid] = ch;
+        g_session_to_entity[session->id()] = pid;
+
+        scene_mgr.add_entity(pid, player->position(), EntityType::Player);
+    });
+
+    session_mgr.set_close_callback([&](SessionId sid) {
+        auto it = g_session_to_entity.find(sid);
+        if (it != g_session_to_entity.end()) {
+            EntityId pid = it->second;
+            if (default_scene) default_scene->remove_entity(pid);
+            g_channels.erase(pid);
+            g_session_to_entity.erase(it);
+        }
+    });
+
+    // 7. Tick callbacks.
     server.schedule_tick(16, [&]() {
-        auto buffers = transport->swap_all_buffers();
-        parse_input(buffers, sys, scene_mgr);
+        // Bind new connections and drain received packets.
+        session_mgr.bind_pending_framed();
+        session_mgr.for_each([&](Session& session) {
+            auto pkts = session.drain_framed();
+            for (auto& pkt : pkts) {
+                auto it = g_session_to_entity.find(session.id());
+                if (it == g_session_to_entity.end()) continue;
+                parse_packet(it->second, pkt.payload, sys, scene_mgr);
+            }
+        });
         sys.swap_all();
     });
 
     server.schedule_tick(16,  [&]{ sys.process_group(grp_skill); });
     server.schedule_tick(33,  [&]{ sys.process_group(grp_move);  });
     server.schedule_tick(100, [&]{ sys.process_group(grp_aoi);   });
-    server.schedule_tick(33,  [&]{ sys.process_group(grp_net);   });
 
-    // 7. Run.
+    // 8. Run.
     server.run();
-    g_conn_timer.stop_and_join();
     LOG_MAIN_INFO("stopped.");
     Logger::instance().destroy();
     return 0;

@@ -63,7 +63,7 @@ set(TITAN_CORE_SOURCES
     src/gs/net/tcp/server.cpp
     src/gs/net/tcp/connection.cpp
     src/gs/net/message.cpp
-    src/gs/net/actor/net_sync.cpp
+    src/gs/net/channel.cpp
     # Peer-to-peer
     src/gs/net/tcp/peer.cpp
     src/gs/actor/peer_manager.cpp

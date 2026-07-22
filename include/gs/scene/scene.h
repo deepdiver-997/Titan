@@ -38,9 +38,12 @@ public:
     void register_in_aoi(EntityId id, const Vec2& pos, EntityType type);
     void move_in_aoi(EntityId id, const Vec2& new_pos);
 
-    // ---- NetSync ----------------------------------------------------------
-    void set_net_sync_target(ActorId aid) { _net_sync_aid = aid; }
-    ActorId net_sync_target() const { return _net_sync_aid; }
+    // ---- Output -----------------------------------------------------------
+    // Application-level send callback: (target_entity, data)
+    // Called by AOI / game logic to push data toward a client.
+    using SendCb = std::function<void(EntityId, const std::vector<uint8_t>&)>;
+    void set_send_callback(SendCb cb) { _send_cb = std::move(cb); }
+    const SendCb& send_callback() const { return _send_cb; }
 
 protected:
     using AoiCb = std::function<void(EntityId, const AoiDiff&)>;
@@ -52,7 +55,7 @@ private:
     SceneId _scene_id;
     const ServerConfig& _config;
     float _world_x_min, _world_x_max;
-    ActorId _net_sync_aid = INVALID_ACTOR_ID;
+    SendCb _send_cb;
 
     std::unique_ptr<IAoi> _aoi;
     std::unordered_map<EntityId, std::shared_ptr<Entity>> _entities;

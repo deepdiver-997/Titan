@@ -12,6 +12,7 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -20,6 +21,7 @@ namespace gs {
 namespace debug {
 struct RecordedEvent;
 }
+class Channel;
 }
 
 namespace gs {
@@ -45,6 +47,20 @@ public:
     // Register a self-rescheduling tick callback at `interval_ms`.
     // Internally uses bthread_timer (not steady_timer) — no io_context jitter.
     void schedule_tick(int interval_ms, std::function<void()> callback);
+
+    // ---- IO frequency groups (decoupled from actor system) ----------------
+    //
+    // Like actor tick groups, but for network IO. Channels register
+    // themselves with an IO group; the group's timer task calls
+    // Channel::flush() on every tick.
+    //
+    // Usage:
+    //   auto io_grp = server.create_io_group(33);  // ~30 Hz flush
+    //   server.add_to_io_group(io_grp, channel);
+    using IoGroupHandle = int;
+    IoGroupHandle create_io_group(int interval_ms);
+    void add_to_io_group(IoGroupHandle handle, std::shared_ptr<Channel> ch);
+    void remove_from_io_group(IoGroupHandle handle, Channel* ch);
 
     // Register a repeating snapshot callback directly on bthread_timer.
     // The callback is scheduled with TASK_FLAG_DONT_COUNT_TIME — its
@@ -112,6 +128,17 @@ private:
     // Trampoline: bthread_timer C-callback → SnapshotEntry
     static void snapshot_trampoline(void* arg);
 
+    struct IoGroup {
+        int interval_ms;
+        std::mutex mtx;
+        std::vector<std::weak_ptr<Channel>> channels;
+        TitanServer* server = nullptr;
+        IoGroupHandle handle = 0;
+
+        static void trampoline(void* arg);
+        void tick();
+    };
+
     // Registered tick callbacks (ordered by registration).
 
     const ServerConfig& _config;
@@ -134,6 +161,10 @@ private:
 
     // Optional repeating snapshot timer (direct on bthread_timer).
     std::unique_ptr<SnapshotEntry> _snapshot_entry;
+
+    // IO frequency groups.
+    IoGroupHandle _next_io_handle = 1;
+    std::unordered_map<IoGroupHandle, std::unique_ptr<IoGroup>> _io_groups;
 
     // Session management.
 

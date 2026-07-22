@@ -63,6 +63,12 @@ public:
     };
     std::vector<RecvPacket> drain_all();
 
+    // Like drain_all(), but strips TcpConnection's [4B len][body]
+    // framing before parsing SessionHeaders. Use this when the
+    // underlying transport (TcpConnection) prepends a length prefix
+    // to each frame in the recv buffer.
+    std::vector<RecvPacket> drain_framed();
+
     // True if at least one channel is connected.
     bool is_alive() const {
         return (_conns[0] && !_conns[0]->is_closed()) ||

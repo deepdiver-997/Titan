@@ -1,6 +1,4 @@
 #include "battle_scene.h"
-#include "gs/net/message.h"
-#include "gs/net/actor/net_sync.h"
 
 #include "gs/common/logger.h"
 #include <iostream>
@@ -12,33 +10,28 @@ BattleScene::BattleScene(gs::ActorId id, gs::SceneId scene_id,
     : gs::Scene(id, scene_id, config)
 {
     set_aoi_callback([this](gs::EntityId viewer, const gs::AoiDiff& diff) {
-        auto aid = net_sync_target();
-        if (aid == gs::INVALID_ACTOR_ID) return;
+        const auto& send_cb = send_callback();
+        if (!send_cb) return;
+        auto send_str = [&](gs::EntityId target, const std::string& s) {
+            std::vector<uint8_t> data(s.begin(), s.end());
+            send_cb(target, data);
+        };
         for (auto eid : diff.entered) {
             auto* ent = aoi().get_entity(eid);
             float x = ent ? ent->position.x : 0;
             float y = ent ? ent->position.y : 0;
-            auto msg = std::make_unique<gs::ClientBoundMsg>();
-            msg->target_player = viewer;
-            msg->data = "ENTER " + std::to_string(eid) + " " +
-                        std::to_string((int)x) + " " + std::to_string((int)y);
-            send_deferred(aid, std::move(msg));
+            send_str(viewer, "ENTER " + std::to_string(eid) + " " +
+                     std::to_string((int)x) + " " + std::to_string((int)y));
         }
         for (auto eid : diff.moved) {
             auto* ent = aoi().get_entity(eid);
             float x = ent ? ent->position.x : 0;
             float y = ent ? ent->position.y : 0;
-            auto msg = std::make_unique<gs::ClientBoundMsg>();
-            msg->target_player = viewer;
-            msg->data = "MOVE " + std::to_string(eid) + " " +
-                        std::to_string((int)x) + " " + std::to_string((int)y);
-            send_deferred(aid, std::move(msg));
+            send_str(viewer, "MOVE " + std::to_string(eid) + " " +
+                     std::to_string((int)x) + " " + std::to_string((int)y));
         }
         for (auto eid : diff.left) {
-            auto msg = std::make_unique<gs::ClientBoundMsg>();
-            msg->target_player = viewer;
-            msg->data = "LEAVE " + std::to_string(eid);
-            send_deferred(aid, std::move(msg));
+            send_str(viewer, "LEAVE " + std::to_string(eid));
         }
     });
 }

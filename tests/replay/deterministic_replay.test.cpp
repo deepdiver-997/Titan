@@ -51,7 +51,6 @@
 #include "gs/actor/actor_system.h"
 #include "gs/common/config.h"
 #include "gs/debug/trace_event.h"
-#include "gs/net/actor/net_sync.h"
 #include "gs/server/titan_server.h"
 
 #include <atomic>
@@ -59,6 +58,12 @@
 
 using namespace gs;
 using namespace gs::debug;
+
+// Test-only message type (replaces removed ClientBoundMsg from net_sync.h).
+struct TestDataMsg : public Message {
+    EntityId target_player{0};
+    std::string data;
+};
 
 // ---- Test Actor -----------------------------------------------------------
 // Simulates a game actor with counter + string state.
@@ -71,7 +76,7 @@ public:
     ReplayTestActor(ActorId id) : Actor(id, "replay_test") {}
 
     void on_message(Message& msg) override {
-        auto* m = dynamic_cast<ClientBoundMsg*>(&msg);
+        auto* m = dynamic_cast<TestDataMsg*>(&msg);
         if (m) {
             counter++;
             last_msg = m->data;
@@ -99,7 +104,7 @@ TEST_CASE("Deterministic Replay: actor processing + snapshot capture",
     ActorId aid = sys.spawn(std::make_unique<ReplayTestActor>(100), grp);
 
     // Simulate a round of processing: send, swap, process.
-    auto msg = std::make_unique<ClientBoundMsg>();
+    auto msg = std::make_unique<TestDataMsg>();
     msg->target_player = 1;
     msg->data = "hello";
     sys.send(aid, std::move(msg));

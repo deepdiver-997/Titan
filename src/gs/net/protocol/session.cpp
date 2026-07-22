@@ -90,6 +90,58 @@ std::vector<Session::RecvPacket> Session::drain_all() {
     return result;
 }
 
+std::vector<Session::RecvPacket> Session::drain_framed() {
+    std::vector<RecvPacket> result;
+    for (int ch = 0; ch < 2; ++ch) {
+        auto& conn = _conns[ch];
+        if (!conn) continue;
+
+        auto framed = conn->swap_recv_buffer();
+
+        // Strip TcpConnection's [4B len][body] framing.
+        std::vector<uint8_t> raw;
+        size_t off = 0;
+        while (off + 4 <= framed.size()) {
+            uint32_t flen =
+                (static_cast<uint32_t>(framed[off]) << 24) |
+                (static_cast<uint32_t>(framed[off+1]) << 16) |
+                (static_cast<uint32_t>(framed[off+2]) << 8) |
+                static_cast<uint32_t>(framed[off+3]);
+            off += 4;
+            if (off + flen > framed.size()) break;
+            raw.insert(raw.end(), framed.begin() + off,
+                       framed.begin() + off + flen);
+            off += flen;
+        }
+
+        // Parse SessionHeader packets from unframed bytes.
+        size_t offset = 0;
+        while (offset + sizeof(SessionHeader) <= raw.size()) {
+            auto* hdr = reinterpret_cast<SessionHeader*>(raw.data() + offset);
+            uint16_t plen = read_be16(
+                reinterpret_cast<uint8_t*>(&hdr->payload_len_be));
+
+            if (hdr->session_id != _id) {
+                offset += sizeof(SessionHeader) + plen;
+                continue;
+            }
+
+            offset += sizeof(SessionHeader);
+            if (offset + plen > raw.size()) break;
+
+            RecvPacket pkt;
+            pkt.channel = hdr->channel;
+            if (plen > 0) {
+                pkt.payload.assign(raw.data() + offset,
+                                   raw.data() + offset + plen);
+            }
+            result.push_back(std::move(pkt));
+            offset += plen;
+        }
+    }
+    return result;
+}
+
 void Session::close() {
     for (int i = 0; i < 2; ++i) {
         if (_conns[i]) {
