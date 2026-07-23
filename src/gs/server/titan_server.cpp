@@ -1,7 +1,6 @@
 #include "gs/server/titan_server.h"
 #include "gs/common/logger.h"
 #include "gs/debug/trace_event.h"
-#include "gs/net/channel.h"
 
 #include <csignal>
 #include <sstream>
@@ -34,9 +33,6 @@ void TitanServer::wheel_tick_trampoline(void* arg) {
 void TitanServer::wheel_tick_impl(WheelEntry& entry) {
     if (!_running.load(std::memory_order_relaxed)) return;
     if (_paused.load(std::memory_order_relaxed)) {
-        // Re-schedule next tick without advancing the wheel.
-        // The bthread_timer's kevent will sleep for interval_ms,
-        // so this is not a busy loop.
         entry.reschedule_fn();
         return;
     }
@@ -57,7 +53,6 @@ void TitanServer::ensure_wheel(int interval_ms) {
     entry.interval_ms = interval_ms;
     entry.server = this;
 
-    // Build the self-reschedule lambda.
     auto& stored = _wheels[interval_ms];
     stored.wheel = std::move(entry.wheel);
     stored.interval_ms = interval_ms;
@@ -71,7 +66,6 @@ void TitanServer::ensure_wheel(int interval_ms) {
             wheel_tick_trampoline, &stored, at);
     };
 
-    // Schedule the first tick directly (bypasses _running check).
     auto at = std::chrono::steady_clock::now() +
               std::chrono::milliseconds(interval_ms);
     stored.tick_task_id = _tick_timer.schedule(
@@ -91,78 +85,6 @@ void TitanServer::schedule_tick(int interval_ms,
     wheel->addTask(interval_ms, *task);
 }
 // =====
-// IO frequency groups — like tick groups but for network IO
-// ============================================================================
-
-void TitanServer::IoGroup::trampoline(void* arg) {
-    static_cast<IoGroup*>(arg)->tick();
-}
-
-void TitanServer::IoGroup::tick() {
-    if (!server || !server->_running.load(std::memory_order_relaxed)) return;
-
-    std::vector<std::shared_ptr<Channel>> active;
-    {
-        std::lock_guard lk(mtx);
-        for (auto it = channels.begin(); it != channels.end();) {
-            if (auto ch = it->lock()) {
-                active.push_back(std::move(ch));
-                ++it;
-            } else {
-                it = channels.erase(it);
-            }
-        }
-    }
-
-    for (auto& ch : active) {
-        ch->flush();
-    }
-
-    // Self-reschedule.
-    if (server->_running.load(std::memory_order_relaxed)) {
-        auto at = std::chrono::steady_clock::now() +
-                  std::chrono::milliseconds(interval_ms);
-        server->_tick_timer.schedule(trampoline, this, at);
-    }
-}
-
-TitanServer::IoGroupHandle TitanServer::create_io_group(int interval_ms) {
-    auto g = std::make_unique<IoGroup>();
-    g->interval_ms = interval_ms;
-    g->server = this;
-    g->handle = _next_io_handle;
-
-    // Schedule the first tick.
-    auto at = std::chrono::steady_clock::now() +
-              std::chrono::milliseconds(interval_ms);
-    _tick_timer.schedule(&IoGroup::trampoline, g.get(), at);
-
-    auto handle = _next_io_handle++;
-    _io_groups[handle] = std::move(g);
-    return handle;
-}
-
-void TitanServer::add_to_io_group(IoGroupHandle handle,
-                                   std::shared_ptr<Channel> ch) {
-    auto it = _io_groups.find(handle);
-    if (it == _io_groups.end()) return;
-    std::lock_guard lk(it->second->mtx);
-    it->second->channels.push_back(ch);
-}
-
-void TitanServer::remove_from_io_group(IoGroupHandle handle, Channel* ch) {
-    auto it = _io_groups.find(handle);
-    if (it == _io_groups.end()) return;
-    std::lock_guard lk(it->second->mtx);
-    auto& vec = it->second->channels;
-    vec.erase(std::remove_if(vec.begin(), vec.end(),
-        [ch](const std::weak_ptr<Channel>& wp) {
-            auto sp = wp.lock();
-            return !sp || sp.get() == ch;
-        }),
-        vec.end());
-}
-// =====
 // Snapshot timer — bthread_timer with DONT_COUNT_TIME
 // ============================================================================
 
@@ -174,7 +96,6 @@ void TitanServer::snapshot_trampoline(void* arg) {
 
     entry->callback();
 
-    // Self-reschedule on bthread_timer.
     auto at = std::chrono::steady_clock::now() +
               std::chrono::milliseconds(entry->interval_ms);
     entry->task_id = entry->server->_tick_timer.schedule(
@@ -190,7 +111,6 @@ void TitanServer::schedule_snapshot(int interval_ms,
     entry->server = this;
     _snapshot_entry = std::move(entry);
 
-    // Schedule the first snapshot.
     auto at = std::chrono::steady_clock::now() +
               std::chrono::milliseconds(interval_ms);
     _snapshot_entry->task_id = _tick_timer.schedule(
@@ -203,13 +123,10 @@ void TitanServer::schedule_snapshot(int interval_ms,
 
 void TitanServer::reload_state(const debug::ServerSnapshot& snapshot,
                                 const std::vector<debug::RecordedEvent>& events) {
-    // Restore actors from the snapshot.
     _actor_system->restore_from_snapshot(snapshot.actors);
     _master_tick.store(snapshot.tick_counter, std::memory_order_relaxed);
 
-    // Find the latest event tick so we know how many ticks to replay.
     uint32_t max_event_tick = snapshot.tick_counter;
-    // Filter events: those before snapshot.tick_counter are discarded.
     std::vector<const debug::RecordedEvent*> filtered;
     for (auto& ev : events) {
         if (ev.tick_counter >= snapshot.tick_counter) {
@@ -219,32 +136,25 @@ void TitanServer::reload_state(const debug::ServerSnapshot& snapshot,
         }
     }
 
-    // Replay tick by tick (swap_all + process_group only, no callbacks).
     for (uint32_t t = snapshot.tick_counter; t <= max_event_tick; ++t) {
         _master_tick.store(t, std::memory_order_relaxed);
 
-        // Feed events for this tick.
         for (auto* ev : filtered) {
             if (ev->tick_counter != t) continue;
-
             if (ev->type == debug::RecordedEvent::MailboxPush) {
                 // Full replay: deserialize message from ev->data
                 // and call _actor_system->send(ev->entity_id, msg).
-                // For now, MailboxPush is a delivery marker.
             }
         }
 
-        // Process this tick.
         _actor_system->swap_all();
         for (auto& g : _actor_system->groups()) {
             _actor_system->process_group(g->id);
         }
     }
 
-    // Set master tick past the replayed range.
     _master_tick.store(max_event_tick + 1, std::memory_order_relaxed);
 }
-// =====
 // =====
 // Tick control
 // ============================================================================
@@ -278,18 +188,15 @@ static void signal_handler(int sig) {
 void TitanServer::run() {
     _running.store(true);
 
-    // Register signal handlers.
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
     LOG_SRV_INFO("starting ({} wheels, bthread_timer driven)", _wheels.size());
 
-    // io_context runs on its own thread (network I/O, not tick scheduling).
     std::thread io_thread([this]() {
         _io_context.run();
     });
 
-    // Main thread: poll signal flag.
     while (_running.load() && g_signal_flag == 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
@@ -302,7 +209,6 @@ void TitanServer::run() {
 
     io_thread.join();
 
-    // _tick_timer.stop_and_join() is called in stop().
     LOG_SRV_INFO("stopped.");
 }
 
@@ -310,11 +216,8 @@ void TitanServer::stop() {
     _running.store(false);
     g_signal_flag = SIGTERM;
 
-    // Let external code close io_context resources (TCP acceptor, etc.).
     if (_on_stop) _on_stop();
 
-    // Stop the bthread_timer.  Tick callbacks in flight may still run
-    // but will see _running==false and skip their work.
     _tick_timer.stop_and_join();
 
     _worker_pool.join();

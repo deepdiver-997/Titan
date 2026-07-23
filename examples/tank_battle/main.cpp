@@ -66,9 +66,9 @@ int main() {
     TitanServer server(config);
     server.init();
 
-    // Session management + IO frequency group for channel flushing.
+    // Session management + network output.
     SessionManager session_mgr;
-    auto io_grp = server.create_io_group(33);  // ~30 Hz flush
+    auto* sink = server.net().get_sink(33);  // ~30 Hz flush group
 
     auto& sys = server.actor_system();
     auto grp_move   = sys.create_tick_group("tank_move", 30);
@@ -107,8 +107,8 @@ int main() {
                                     gs::EntityType::Player);
 
         // Create reliable channel bound to this session.
-        auto ch = std::make_shared<Channel>(session, 0);
-        server.add_to_io_group(io_grp, ch);
+        auto ch = std::make_shared<Channel>(session, 0,
+                                            Channel::WriteMode::Append, sink);
         g_channels[pid] = ch;
         g_session_to_entity[session->id()] = pid;
 

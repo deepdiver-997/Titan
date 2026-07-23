@@ -3,6 +3,7 @@
 #include "gs/actor/actor_system.h"
 #include "gs/common/config.h"
 #include "gs/debug/trace_event.h"
+#include "gs/net/net_subsystem.h"
 #include "third_party/bthread_timer/timer.h"
 #include "third_party/timing_wheel/timing_wheel.h"
 
@@ -12,7 +13,6 @@
 #include <atomic>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -21,13 +21,12 @@ namespace gs {
 namespace debug {
 struct RecordedEvent;
 }
-class Channel;
 }
 
 namespace gs {
 
-// Minimal framework — io_context + ActorSystem + per-frequency TimingWheels
-// driven by a single bthread_timer (dedicated thread, kqueue-based).
+// Minimal framework — io_context + ActorSystem + NetSubsystem + per-frequency
+// TimingWheels driven by a single bthread_timer (dedicated thread).
 //
 // Debug is provided as a C++ API (#ifdef TITAN_DEBUG) — not a stdin console.
 //   - SnapshotManager: capture all Actor state at a tagged point
@@ -47,20 +46,6 @@ public:
     // Register a self-rescheduling tick callback at `interval_ms`.
     // Internally uses bthread_timer (not steady_timer) — no io_context jitter.
     void schedule_tick(int interval_ms, std::function<void()> callback);
-
-    // ---- IO frequency groups (decoupled from actor system) ----------------
-    //
-    // Like actor tick groups, but for network IO. Channels register
-    // themselves with an IO group; the group's timer task calls
-    // Channel::flush() on every tick.
-    //
-    // Usage:
-    //   auto io_grp = server.create_io_group(33);  // ~30 Hz flush
-    //   server.add_to_io_group(io_grp, channel);
-    using IoGroupHandle = int;
-    IoGroupHandle create_io_group(int interval_ms);
-    void add_to_io_group(IoGroupHandle handle, std::shared_ptr<Channel> ch);
-    void remove_from_io_group(IoGroupHandle handle, Channel* ch);
 
     // Register a repeating snapshot callback directly on bthread_timer.
     // The callback is scheduled with TASK_FLAG_DONT_COUNT_TIME — its
@@ -83,16 +68,19 @@ public:
     void run();
     void stop();
 
+    // ---- Accessors --------------------------------------------------------
+
     boost::asio::io_context& io_context() { return _io_context; }
     ActorSystem& actor_system() { return *_actor_system; }
     const ServerConfig& config() const { return _config; }
     TimingWheel* wheel_for_interval(int interval_ms);
     bthread_timer::Timer& tick_timer() { return _tick_timer; }
 
+    // Network output subsystem: flush groups + Channel factory.
+    NetSubsystem& net() { return _net; }
+
     // Monotonic tick counter, incremented on every wheel tick.
     uint32_t master_tick() const { return _master_tick.load(std::memory_order_relaxed); }
-
-
 
     // ---- Disaster recovery ------------------------------------------------
 
@@ -109,7 +97,7 @@ private:
         bthread_timer::TaskId tick_task_id{bthread_timer::INVALID_TASK_ID};
         int interval_ms = 0;
         std::function<void()> reschedule_fn;
-        TitanServer* server = nullptr;  // back-pointer for trampoline
+        TitanServer* server = nullptr;
     };
 
     void ensure_wheel(int interval_ms);
@@ -121,25 +109,10 @@ private:
         TitanServer* server = nullptr;
     };
 
-    // Trampoline: bthread_timer C-callback → WheelEntry
     static void wheel_tick_trampoline(void* arg);
     void wheel_tick_impl(WheelEntry& entry);
 
-    // Trampoline: bthread_timer C-callback → SnapshotEntry
     static void snapshot_trampoline(void* arg);
-
-    struct IoGroup {
-        int interval_ms;
-        std::mutex mtx;
-        std::vector<std::weak_ptr<Channel>> channels;
-        TitanServer* server = nullptr;
-        IoGroupHandle handle = 0;
-
-        static void trampoline(void* arg);
-        void tick();
-    };
-
-    // Registered tick callbacks (ordered by registration).
 
     const ServerConfig& _config;
     boost::asio::io_context _io_context;
@@ -147,26 +120,16 @@ private:
     std::unordered_map<int, WheelEntry> _wheels;
     std::atomic<bool> _running{false};
 
-    // Thread pool for parallel actor execution (shared across tick groups).
     boost::asio::thread_pool _worker_pool{4};
-
-    // Single bthread_timer driving all TimingWheels.
     bthread_timer::Timer _tick_timer;
 
-    // Tick control.
     std::atomic<bool> _paused{false};
-
-    // Monotonic master tick, incremented on every wheel tick.
     std::atomic<uint32_t> _master_tick{0};
 
-    // Optional repeating snapshot timer (direct on bthread_timer).
     std::unique_ptr<SnapshotEntry> _snapshot_entry;
 
-    // IO frequency groups.
-    IoGroupHandle _next_io_handle = 1;
-    std::unordered_map<IoGroupHandle, std::unique_ptr<IoGroup>> _io_groups;
-
-    // Session management.
+    // Network output: flush groups + Channel factory (replaces IoGroup).
+    NetSubsystem _net{*this};
 
     std::function<void()> _on_stop;
 };
