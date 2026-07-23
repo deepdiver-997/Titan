@@ -37,6 +37,19 @@ Key property: **mid-tick inter-Actor messages are deferred to the next tick**.
 This ensures every Actor sees a consistent world snapshot during processing —
 no entity can react to another entity's actions within the same tick.
 
+### Actor Output
+
+Actors produce output by writing directly to a `Channel`:
+```cpp
+// Inside on_message():
+ch->write(payload);  // thread-safe, auto-enqueued for flush
+```
+
+Channels are owned by entities (via `shared_ptr`) and constructed with a
+`DirtySink*` (flush frequency group) and a `Session` connection slot
+(0=reliable, 1=unreliable). No dedicated "network actor" — the Channel
+abstraction decouples game logic from transport.
+
 ### Scene = Actor
 
 Each map shard (Scene) is an Actor. This means:
@@ -119,24 +132,24 @@ to push the second hand forward.
 of wall-clock time. The `tick_interval_ms` parameter only converts delay_ms to
 tick count; it doesn't drive anything.
 
-**Why use it for games**: Game servers are already tick-driven. You don't need a
-separate timer thread — just call `tick()` inside your game tick loop. O(1)
-add/cancel, no syscall overhead, naturally aligned with the game clock.
+**Why use it for games**: Game servers are tick-driven. `bthread_timer` calls
+`tick()` on each TimingWheel at its configured frequency. O(1) add/cancel,
+no per-task syscall overhead, naturally aligned with the game clock.
 
-### 3.2 steady_timer — The Battery
+### 3.2 bthread_timer as Tick Driver
 
 ```
-boost::asio::steady_timer (16ms interval)
-  → callback: timing_wheel.tick()  // advance the clock
-  → self-reschedule
-io_context.run()  // unified event loop
+bthread_timer (dedicated thread)
+  → schedule() with self-rescheduling callbacks (WheelEntry per frequency)
+  → callback: timing_wheel.tick()  // advance the clock, fire expired tasks
+  → reschedule for next tick
 ```
 
-`steady_timer` is Boost.Asio's wall-clock timer — the "battery" that drives the
-TimingWheel. Every 16ms it fires, calls `timing_wheel.tick()`, and reschedules
-itself. Since it lives on the same `io_context` as the TCP acceptor and sockets,
-there's no need for manual `while+sleep` — `io_context.run()` runs the entire
-game server as a single event loop.
+In the current architecture, `bthread_timer` replaced `steady_timer` as the
+game tick driver. Each frequency gets its own self-rescheduling callback
+scheduled on `bthread_timer`. This decouples game ticks from the io_context
+— network I/O and game logic run on separate threads without jitter
+interference.
 
 ### 3.3 bthread_timer — A True Timer
 
@@ -152,18 +165,21 @@ Unlike the TimingWheel, `bthread_timer` IS a real timer. It has its own thread
 that sleeps/wakes via kqueue, high-precision (us) timeout, and runs callbacks
 on the timer thread.
 
-**Why it's in the project**: Used for network connection timeout detection.
-The timer callback checks if a connection has been idle too long and closes it.
-This is posted to the timer thread, not the game tick — keeping network
-housekeeping separate from game logic.
+**Why it's in the project**: Two uses —
+1. **NetSubsystem flush groups**: each flush group schedules itself on
+   `bthread_timer` to periodically swap its `DirtySink` and flush dirty
+   channels. This is IO work, not game logic — keeping it on a dedicated
+   timer thread prevents IO jitter from affecting game tick timing.
+2. **Connection timeout detection**: a timer callback checks if a connection
+   has been idle too long and closes it.
 
 ### 3.4 Why Three Timers?
 
 | Timer | Type | Thread | Best For |
 |-------|------|--------|----------|
-| TimingWheel | Data structure | None (driven by steady_timer) | Game logic: skill CD, buff duration, NPC respawn — O(1) add/cancel |
-| steady_timer | Asio timer | io_context thread | Drives the game tick at 60Hz, unified with network I/O |
-| bthread_timer | True timer | Dedicated thread | Network timeouts, heartbeat — us precision, non-blocking |
+| TimingWheel | Data structure | None (driven by bthread_timer) | Game logic: skill CD, buff duration, NPC respawn — O(1) add/cancel |
+| bthread_timer | True timer | Dedicated thread | Game tick driver (per-frequency wheels) + NetSubsystem flush groups + network timeouts |
+| steady_timer | Asio timer | io_context thread | Network I/O (async_read/write) — not used for game ticks |
 
 This demonstrates the ability to **choose the right timer for each use case**
 rather than blindly using one for everything.
@@ -199,65 +215,70 @@ Key distinction:
 
 ## 4. Main Loop Architecture
 
-### Event Loop
+### Thread Model
 
 ```
-main thread: signal polling (sleep 200ms)
-io_thread:   io_context.run()
-  │
-  ├── tcp::acceptor::async_accept → new connection → async_read loop
-  ├── tcp::socket::async_read → append to RecvBuffer
-  ├── tcp::socket::async_write → send responses
-  └── steady_timer(N ms) per wheel → tick callbacks → process_group
+main thread:  signal polling (sleep 200ms)
+io_thread:    io_context.run()
+                ├── tcp::acceptor::async_accept
+                ├── tcp::socket::async_read / async_write
+bthread_timer: dedicated high-precision thread
+                ├── TimingWheel ticks (per-frequency: 16/33/100ms)
+                └── NetSubsystem flush group ticks
 ```
 
-Same pattern as ProtoRelay: async start + signal polling main loop.
-
-### Project Layering
-
-```
-include/gs/           ← 框架层：Actor、ActorSystem、TitanServer、网络
-examples/common/      ← 业务基础设施：Scene、SceneManager (AOI + 实体管理)
-examples/tank_battle/ ← 示例项目：BattleScene、Tank、Bullet
-```
-
-Scene is NOT part of the core framework. It provides AOI + entity storage for
-spatial simulations. Subclasses add game-specific logic (tank movement, combat).
+The game tick is no longer driven by `steady_timer` on the io_context.
+Instead, `bthread_timer` drives all TimingWheels and NetSubsystem flush
+groups on its own thread. Network I/O runs on `io_context` independently.
 
 ### Game Tick Phases
 
 ```
-steady_timer fires every 16ms:
-  Phase 1 — collect input:
-    conn_mgr.swap_all_buffers()  → raw byte streams keyed by player_id
-    parse each buffer → push_now() to Scene Actor's cur_msgs
+bthread_timer fires at configured intervals:
 
-  Phase 2 — swap mailboxes:
-    actor_system.swap_all()  → next_mailbox → cur_msgs
+  Phase 1 — input (16ms):
+    SessionManager.bind_pending_framed()   // bind new connections
+    for_each session: session.drain_framed()  // collect received packets
+    parse → sys.send() → Actor mailbox
 
-  Phase 3 — tick game systems:
-    TickManager.tick() → move@30Hz, skill@60Hz, AOI@10Hz
+  Phase 2 — swap mailboxes (16ms):
+    actor_system.swap_all()
 
-  Phase 4 — execute:
-    actor_system.process_all() → Scene.on_message() → AOI.move_player()
+  Phase 3 — process groups (at their own frequencies):
+    process_group(grp_skill) @16ms
+    process_group(grp_move)  @33ms
+    process_group(grp_aoi)   @100ms
+    // Each uses thread_pool + barrier for parallel execution
 
-  Phase 5 — sync:
-    Player.send_callback → encode → conn.send()
+  Phase 4 — output (NetSubsystem, at its own frequency):
+    FlushGroup timer fires → swaps DirtySink → calls flush_and_reset()
+    on each still-alive dirty channel
+    → Session.send() → TcpConnection.async_write → client
 ```
+
+Output is fully decoupled from the actor tick — NetSubsystem runs on its
+own timer schedule with incremental (dirty-only) flush.
 
 ### Connection Management
 
 ```
 TcpConnection {
     RecvBuffer _recv_buf;  // mutex + vector<uint8_t>
-    // Network thread: _recv_buf.append()  ← async_read callback
-    // Tick thread:     _recv_buf.swap_out() ← Phase 1
+    // io_thread:   _recv_buf.append()  ← async_read callback
+    // timer tick:  _recv_buf.swap_out() ← Phase 1 via Session.drain_framed()
 }
 
-ConnectionManager {
-    map<EntityId, Entry> _entries;  // all active connections
-    swap_all_buffers() → batch swap all recv buffers
-    send_to(player_id, data) → route response to specific connection
+SessionManager {
+    map<SessionId, shared_ptr<Session>> _sessions;
+    add_connection(conn)    → queue raw connection
+    bind_pending_framed()   → parse bind request, create Session
+    for_each(cb)            → snapshot iteration under lock
+}
+
+Session {
+    shared_ptr<IConnection> _conns[2];  // 0=reliable, 1=unreliable
+    send(conn_slot, data)   → encode SessionHeader → conn->send()
+    drain_framed()          → strip TCP framing → parse SessionHeaders → return packets
 }
 ```
 
@@ -285,18 +306,116 @@ Scene A                    boundary                    Scene B
 
 ## 6. Network Protocol
 
-Length-prefixed binary protocol:
+### 6.1 Transport Layer (TcpConnection)
+
+Length-prefixed binary protocol over TCP:
 ```
-[4-byte big-endian length][payload]
+[4-byte big-endian length][body]
 ```
 
-Payload starts with 1-byte message type:
+`TcpConnection` handles the 4-byte framing: async_read header → async_read body →
+append `[4B header][body]` to RecvBuffer. The application layer sees framed
+messages in the recv buffer.
+
+### 6.2 Session Layer (SessionHeader)
+
+On top of the transport framing, the Session protocol wraps each application
+message with a routing header:
+```
+[session_id 4B][conn_slot 1B][payload_len 2B BE][payload...]
+```
+
+- `session_id` — assigned by SessionManager on bind (0 = bind request)
+- `conn_slot` — 0 = reliable (TCP), 1 = unreliable (future UDP)
+- `payload_len` — big-endian uint16
+
+`Session.drain_framed()` strips the TcpConnection framing, then parses
+SessionHeaders to extract individual packets. The bind request is a
+zero-payload packet with `session_id=0`.
+
+### 6.3 Application Messages
+
+Payload (after SessionHeader) starts with 1-byte message type:
 - `0x01` Login
 - `0x02` Move (x: float32, y: float32)
 - `0x03` Chat
 - `0x04` AOI Event (type: uint8, entity_id: uint64, x: float32, y: float32)
+- `0x06` Fire
 
-## 6. Debug & Deterministic Replay
+## 7. Network Output: Channel + NetSubsystem
+
+### Design Rationale
+
+Game server output is deterministic, not event-driven. Each tick, the server
+knows exactly which clients need updates (AOI diffs, RPC responses, state
+sync). There's no need for a dedicated "network actor" or callback-based
+output abstraction — game logic writes directly to a Channel.
+
+### Channel
+
+```
+Channel {
+    weak_ptr<Session>  _session      // safe cross-thread access
+    int                _conn_slot     // 0=reliable, 1=unreliable
+    WriteMode          _mode          // Append (RPC) or Overwrite (state sync)
+    DirtySink*         _sink          // flush frequency group
+    atomic<bool>       _dirty         // CAS flag for incremental flush
+    mutex + buffer                   // thread-safe write accumulation
+}
+```
+
+**Write modes** (set at construction, immutable):
+- **Append**: data accumulates in buffer, never lost — for RPC, chat, inventory
+- **Overwrite**: buffer is replaced with latest data — for position, velocity, state sync
+
+**Incremental flush**: on first `write()` after a flush, the channel CAS-sets
+`_dirty` from false to true and enqueues a `weak_ptr` into its `DirtySink`.
+Subsequent writes before the next flush only update the buffer — no duplicate
+enqueue.
+
+**Lifecycle**: Channel is owned by the application entity via `shared_ptr`.
+When the entity is destroyed, the Channel destructor runs; `weak_ptr`s in the
+dirty list expire silently. No unregistration needed.
+
+### NetSubsystem + DirtySink
+
+```
+NetSubsystem (TitanServer member) {
+    get_sink(interval_ms) → DirtySink*    // get-or-create flush group
+
+    FlushGroup {
+        interval_ms
+        DirtySink sink  { mutex, vector<weak_ptr<Channel>> }
+        tick()          // swap dirty list, flush each alive channel, reschedule
+    }
+}
+```
+
+`DirtySink` is a public struct — Channel holds a raw pointer to it. On first
+write, Channel locks the sink's mutex and pushes `weak_from_this()`. The
+FlushGroup's timer task swaps the dirty list under lock and calls
+`flush_and_reset()` on each still-alive channel.
+
+```
+write() CAS flow:
+  _dirty.exchange(true)
+    → was false: lock sink → push(weak_from_this())
+    → was true:  skip (already enqueued, buffer already holding data)
+
+flush tick:
+  lock sink → swap dirty list → unlock
+  for each weak_ptr:
+    lock() → flush_and_reset() → [reset _dirty, swap buffer, send]
+            → expired → skip
+```
+
+Key properties:
+- **O(dirty) not O(n)** — only channels that were written to are visited
+- **No callback indirection** — Channel directly writes to its sink's data structure
+- **Self-cleaning** — destroyed channels silently expire from the dirty list
+- **Thread-safe** — sink mutex for enqueue, Channel's own mutex for buffer
+
+## 8. Debug & Deterministic Replay
 
 The original stdin-based debug console has been replaced by a **programmatic
 C++ API** with zero-overhead release builds (`#ifdef TITAN_DEBUG`). See
@@ -323,15 +442,16 @@ Each wheel can be independently paused/resumed. This enables debugging scenarios
 - Pause the skill wheel while keeping AOI and net sync running
 - Freeze the world, inspect state, single-step one tick group at a time
 
-Implementation: each wheel's steady_timer callback checks a `_paused_wheels` set
-before calling `wheel->tick()`.
+Implementation: each wheel's bthread_timer callback checks `_paused` before
+calling `wheel->tick()`. When paused, the callback reschedules without
+advancing the wheel.
 
 ### SIGINT Handling
 
-SIGINT calls `server.stop()` directly (global server pointer). This stops io_context,
-which unblocks `io_context.run()`. The debug console thread exits when stdin closes.
+SIGINT sets a global flag. The main loop polls this flag and calls `server.stop()`,
+which stops the bthread_timer, joins the worker pool, and stops io_context.
 
-## 7. Logging (Planned)
+## 9. Logging (Planned)
 
 Current: `std::cout` / `std::cerr` for everything. Debug output and normal logs are
 interleaved, making it hard to follow either.
@@ -353,7 +473,7 @@ Workflow:
 - **Terminal 1**: `./titan_server` — sees only debug output + interactive `list/pause/step` commands
 - **Terminal 2**: `tail -f titan.log` — scrolls through normal execution logs, no debug noise
 
-## 8. Distributed Actor Routing
+## 10. Distributed Actor Routing
 
 ### PeerManager — Gossip Discovery + Position Registry
 
@@ -399,7 +519,7 @@ void ActorSystem::send(ActorId target, Message msg) {
 - `_routes` reads from `send_to()` are lock-free (stale reads are benign)
 - `_peers` insert/delete under mutex
 
-## 9. Multi-Threaded Actor Execution
+## 11. Multi-Threaded Actor Execution
 
 When a thread pool is set via `ActorSystem::set_thread_pool()`, `process_group()` posts each Actor to the pool instead of running serially.
 
@@ -421,7 +541,7 @@ process_group(grp_move):
 
 Each group has its own `GroupSync` (version, pending count, mutex, cv). Different groups run independently — no cross-group blocking.
 
-## 10. Hot Reload via Instance Draining
+## 12. Hot Reload via Instance Draining
 
 Titan supports zero-downtime rolling updates:
 
@@ -436,7 +556,7 @@ Titan supports zero-downtime rolling updates:
 
 Wire format for REDIRECT (0xF0): `[ip_len 1B][ip str][port 2B]`
 
-## 11. Client-Side AOI
+## 13. Client-Side AOI
 
 Game clients maintain their own local entity table, updated by server-pushed
 AOI events. This is conceptually identical to a quantitative trading system
@@ -452,7 +572,7 @@ The client does NOT need an Actor abstraction — the game engine (Unity, raylib
 already provides the framework for input/update/render loops. Actors are a
 server-side concurrency pattern.
 
-## 12. Protocol Pluggability
+## 14. Protocol Pluggability
 
 The parsing layer is already pluggable via `TcpPeer::set_recv_callback()`.
 Current implementation: `main.cpp`'s `_handlers` registry dispatches by
@@ -478,7 +598,7 @@ TcpServer could implement `IServer` for pluggable transports (TCP, QUIC,
 WebSocket). Currently TcpServer directly manages `weak_ptr<TcpConnection>`.
 Not urgent — single TCP transport covers the demo's needs.
 
-## 13. Gateway — Registration + Health Check
+## 15. Gateway — Registration + Health Check
 
 The Gateway is a lightweight, stateless front-end. Clients connect to it first
 to discover which node owns which Actor. After redirection, communication is
@@ -539,7 +659,7 @@ None of these apply to Titan's Actor routing. The Gateway is the single
 source of truth for routing — it's a SPOF, but a restartable one (just
 re-gossip on startup).
 
-## 14. Production Engineering Gaps
+## 16. Production Engineering Gaps
 
 Intentionally deferred. The project demonstrates architecture understanding,
 not production readiness:
@@ -555,12 +675,13 @@ not production readiness:
 | **IServer abstraction** | TcpServer concrete | IServer interface for QUIC/WS swap |
 | **Unified IConnection** | TcpConnection + TcpPeer separate | Merge shared protocol logic |
 
-## 15. Comparison with Production Systems
+## 17. Comparison with Production Systems
 
 | Aspect | Titan Demo | Production (e.g. skynet) |
 |--------|-----------|--------------------------|
-| Actor scheduling | Single-thread serial (io_context) | Event-driven (epoll/kqueue per actor) |
-| Game tick driver | steady_timer + TimingWheel | skynet.timeout + wheel |
+| Actor scheduling | Thread pool + barrier per tick group | Event-driven (epoll/kqueue per actor) |
+| Game tick driver | bthread_timer + TimingWheel | skynet.timeout + wheel |
+| Network output | Channel + DirtySink incremental flush | Per-actor message push |
 | AOI | 9-grid, in-memory | 9-grid or cross-linked list |
 | Networking | Raw TCP, length-prefixed | TCP + WebSocket, protobuf |
 | Connection I/O | RecvBuffer swap (lock-free critical path) | Per-connection ring buffer |
